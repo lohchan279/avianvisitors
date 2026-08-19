@@ -6,7 +6,8 @@ Step 1 of the illustration pipeline:
     2. cutout.py       remove the ground (BiRefNet) and crop to the bird
     3. build_masks.py  refresh the collage silhouette masks (dims.json + masks.json)
 
-Reads a species list (BirdNET-Pi's labels.txt, eBird, or stdin),
+Reads a species list (BirdNET-Pi's labels.txt, bare scientific-name
+labels, eBird region, or stdin),
 fetches a Wikipedia reference photo for each species, and generates an
 illustration via the Gemini 2.5 Flash Image API. Saves PNGs into
 avian/assets/illustrations/.
@@ -40,9 +41,13 @@ Usage:
     # Every species BirdNET-Pi knows:
     python3 pregen.py --labels ~/BirdNET-Pi/model/labels.txt
 
-    # Only species observed in an eBird region:
+    # Only species observed in an eBird region (also accepts bare
+    # scientific-name label files like model/BirdNET_6K_GLOBAL_MODEL_Labels.txt):
     python3 pregen.py --labels ~/BirdNET-Pi/model/labels.txt \\
                       --ebird-region US-CA --ebird-key YOUR_KEY
+
+    # All birds for a region without a local labels file (e.g. Singapore):
+    python3 pregen.py --ebird-region SG --ebird-key YOUR_KEY
 
     # Re-render a single species (useful after editing the prompt):
     python3 pregen.py --species "Calypte anna|Anna's Hummingbird" --force
@@ -217,7 +222,7 @@ def slugify(sci: str) -> str:
 
 
 def parse_species_line(line: str) -> tuple[str, str] | None:
-    """Accept any of: 'Sci|Com', 'Sci_Com', 'Sci,Com'. Skip blanks + #."""
+    """Accept 'Sci|Com', 'Sci_Com', 'Sci,Com', or bare 'Genus species'. Skip blanks + #."""
     line = line.strip()
     if not line or line.startswith("#"):
         return None
@@ -227,6 +232,9 @@ def parse_species_line(line: str) -> tuple[str, str] | None:
             sci, com = sci.strip(), com.strip()
             if sci and com:
                 return (sci, com)
+    words = line.split()
+    if len(words) >= 2 and words[0][0].isupper():
+        return (line, "")
     return None
 
 
@@ -251,20 +259,58 @@ def load_prompt(path: Path) -> str:
     return (m.group(1) if m else text).strip()
 
 
+def fetch_ebird_taxonomy(key: str) -> list[dict]:
+    """Fetch the full eBird taxonomy."""
+    url = "https://api.ebird.org/v2/ref/taxonomy/ebird?fmt=json"
+    req = urllib.request.Request(url, headers={"X-eBirdApiToken": key})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.loads(r.read())
+
+
+def ebird_species(region: str, key: str) -> list[tuple[str, str]]:
+    """All species observed in an eBird region, with common names."""
+    url = f"https://api.ebird.org/v2/product/spplist/{region}"
+    req = urllib.request.Request(url, headers={"X-eBirdApiToken": key})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        codes = set(json.loads(r.read()))
+    taxonomy = fetch_ebird_taxonomy(key)
+    return [(t["sciName"], t["comName"]) for t in taxonomy
+            if t["speciesCode"] in codes]
+
+
 def ebird_filter(species, region: str, key: str):
     """Intersect a label set with the eBird species list for a region.
-    Region codes: US-CA (state), US-CA-085 (county)."""
+    Region codes: US-CA (state), US-CA-085 (county), SG (country).
+    Also fills in missing common names from the taxonomy."""
     url = f"https://api.ebird.org/v2/product/spplist/{region}"
     req = urllib.request.Request(url, headers={"X-eBirdApiToken": key})
     with urllib.request.urlopen(req, timeout=30) as r:
         ebird_codes = set(json.loads(r.read()))
-    tax_url = "https://api.ebird.org/v2/ref/taxonomy/ebird?fmt=json"
-    req2 = urllib.request.Request(tax_url, headers={"X-eBirdApiToken": key})
-    with urllib.request.urlopen(req2, timeout=60) as r:
-        taxonomy = json.loads(r.read())
+    taxonomy = fetch_ebird_taxonomy(key)
     code_to_sci = {t["speciesCode"]: t["sciName"] for t in taxonomy}
+    sci_to_com = {t["sciName"]: t["comName"] for t in taxonomy}
     allowed = {code_to_sci[c] for c in ebird_codes if c in code_to_sci}
-    return [(s, c) for s, c in species if s in allowed]
+    return [(s, c or sci_to_com.get(s, s)) for s, c in species if s in allowed]
+
+
+def resolve_common_names(species: list[tuple[str, str]], key: str) -> list[tuple[str, str]]:
+    """Fill in missing common names from eBird taxonomy."""
+    blanks = [s for s, c in species if not c]
+    if not blanks:
+        return species
+    taxonomy = fetch_ebird_taxonomy(key)
+    sci_to_com = {t["sciName"]: t["comName"] for t in taxonomy}
+    resolved = 0
+    out = []
+    for s, c in species:
+        if not c and s in sci_to_com:
+            c = sci_to_com[s]
+            resolved += 1
+        elif not c:
+            c = s
+        out.append((s, c))
+    print(f"[ebird] resolved {resolved}/{len(blanks)} common names from taxonomy")
+    return out
 
 
 # ---- Reference photo handling ----
@@ -536,12 +582,12 @@ def main() -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    src = ap.add_mutually_exclusive_group(required=True)
+    src = ap.add_mutually_exclusive_group()
     src.add_argument("--labels", type=Path, help="Path to BirdNET-Pi labels.txt (or any file of Sci|Com lines)")
     src.add_argument("--species", action="append", default=[],
                      help="Manual 'Sci|Com' (repeatable)")
     src.add_argument("--stdin", action="store_true", help="Read Sci|Com lines from stdin")
-    ap.add_argument("--ebird-region", help="eBird region code (e.g. US-CA, US-CA-085) to filter labels")
+    ap.add_argument("--ebird-region", help="eBird region code (e.g. US-CA, SG). Filters --labels when combined; standalone it fetches all species for the region")
     ap.add_argument("--ebird-key", help="eBird API key (or EBIRD_API_KEY env)")
     ap.add_argument("--gemini-key", help="Gemini API key (or GEMINI_API_KEY env)")
     ap.add_argument("--out", type=Path,
@@ -576,25 +622,47 @@ def main() -> int:
         return 2
 
     # Build species list
+    ebird_standalone = False
     if args.labels:
         species, skipped = parse_species_list(args.labels.read_text().splitlines())
     elif args.stdin:
         species, skipped = parse_species_list(sys.stdin.read().splitlines())
-    else:
+    elif args.species:
         species, skipped = parse_species_list(args.species)
+    elif args.ebird_region:
+        ek = args.ebird_key or os.environ.get("EBIRD_API_KEY", "")
+        if not ek:
+            print("error: --ebird-region requires --ebird-key or EBIRD_API_KEY", file=sys.stderr)
+            return 2
+        print(f"[ebird] fetching all species for {args.ebird_region}...")
+        species = ebird_species(args.ebird_region, ek)
+        skipped = 0
+        ebird_standalone = True
+    else:
+        print("error: provide --labels, --species, --stdin, or --ebird-region", file=sys.stderr)
+        return 2
     if skipped:
         print(f"[parse] skipped {skipped} malformed line(s)", file=sys.stderr)
     if not species:
         print("error: no species resolved", file=sys.stderr)
         return 2
 
-    if args.ebird_region:
+    if args.ebird_region and not ebird_standalone:
         ek = args.ebird_key or os.environ.get("EBIRD_API_KEY", "")
         if not ek:
             print("error: --ebird-region requires --ebird-key or EBIRD_API_KEY", file=sys.stderr)
             return 2
         print(f"[ebird] filtering {len(species)} species against {args.ebird_region}...")
         species = ebird_filter(species, args.ebird_region, ek)
+
+    blanks = sum(1 for _, c in species if not c)
+    if blanks:
+        ek = args.ebird_key or os.environ.get("EBIRD_API_KEY", "")
+        if ek:
+            species = resolve_common_names(species, ek)
+        else:
+            print(f"[warn] {blanks} species lack common names; pass --ebird-key to resolve", file=sys.stderr)
+            species = [(s, c or s) for s, c in species]
 
     if args.limit:
         species = species[:args.limit]
