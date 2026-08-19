@@ -1,0 +1,1 @@
+/home/joelrach/BirdNET-Pi/model/labels_nm/labels_en.txt

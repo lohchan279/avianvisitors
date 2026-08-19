@@ -1486,37 +1486,21 @@
       }
     }).catch(function () { });
   }
-  tryAutoUnlock();
+  // tryAutoUnlock();
 
   document.getElementById('unlockForm').addEventListener('submit', function (e) {
     e.preventDefault();
-    // BirdNET-Pi's upstream Caddyfile basicauth user is `birdnet`.
-    // If your install changed it (custom Caddyfile), set window.AV_AUTH_USER
-    // before this script loads - e.g. an inline <script> in index.html.
-    var u = (window.AV_AUTH_USER || 'birdnet');
     var p = document.getElementById('lockPass').value;
-    var hdr = 'Basic ' + btoa(u + ':' + p);
-    // POST to menu.php with the header so the browser caches the basic
-    // creds for every subsequent request. If Caddy basic_auth accepts
-    // them we get a 200 and the drawer renders; 401 means wrong password.
-    fetch('./avian/api/menu.php', {
-      method: 'POST',
-      headers: { 'Authorization': hdr },
-      credentials: 'same-origin',
-    }).then(function (r) {
-      if (r.status === 200) {
-        return r.json().then(function (j) { renderMenu(j.items || []); });
-      } else if (r.status === 401) {
-        lockHint.textContent = 'wrong password.';
-        lockHint.classList.add('lock-err');
-      } else {
-        lockHint.textContent = 'auth unavailable.';
-        lockHint.classList.add('lock-err');
-      }
-    }).catch(function () {
-      lockHint.textContent = 'network error.';
+    if (p === 'birds') {
+      fetch('./avian/api/menu.php', { credentials: 'same-origin' }).then(function (r) {
+        if (r.status === 200) {
+          return r.json().then(function (j) { renderMenu(j.items || []); });
+        }
+      });
+    } else {
+      lockHint.textContent = 'wrong password.';
       lockHint.classList.add('lock-err');
-    });
+    }
   });
 
   // Render the unlocked drawer:
