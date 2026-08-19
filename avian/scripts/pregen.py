@@ -216,6 +216,10 @@ ANTI_REF_TRIGGERS = (
 USER_AGENT = "AvianVisitors/1.0 (https://github.com/Twarner491/AvianVisitors)"
 
 
+class RateLimitError(Exception):
+    pass
+
+
 def slugify(sci: str) -> str:
     """Match avian/frontend/apt.js slugify() exactly."""
     return re.sub(r"[^a-z0-9]+", "-", sci.lower()).strip("-")
@@ -531,27 +535,31 @@ def gen_one(
         method="POST",
     )
 
-    backoff = 4.0
-    for attempt in range(4):
+    backoff = 8.0
+    for attempt in range(6):
         try:
             with urllib.request.urlopen(req, timeout=180) as r:
                 resp = json.loads(r.read())
             break
         except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 502, 503, 504) and attempt < 3:
+            if e.code in (429, 500, 502, 503, 504) and attempt < 5:
                 ra = e.headers.get("Retry-After")
                 try:
-                    retry_after = float(ra) if ra else backoff
+                    retry_after = min(float(ra) if ra else backoff, 120.0)
                 except (TypeError, ValueError):
-                    retry_after = backoff  # HTTP-date format, fall back
+                    retry_after = backoff
+                if e.code == 429:
+                    print(f"    [429] rate limited, waiting {retry_after:.0f}s (attempt {attempt + 1}/6)...", file=sys.stderr)
                 time.sleep(retry_after)
-                backoff *= 2
+                backoff = min(backoff * 2, 120.0)
                 continue
+            if e.code == 429:
+                raise RateLimitError(f"rate limited after {attempt + 1} retries") from e
             raise
         except urllib.error.URLError:
-            if attempt < 3:
+            if attempt < 5:
                 time.sleep(backoff)
-                backoff *= 2
+                backoff = min(backoff * 2, 120.0)
                 continue
             raise
 
@@ -611,8 +619,8 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="Re-render even if file exists")
     ap.add_argument("--no-refs", action="store_true",
                     help="Skip the Wikipedia reference fetch (faster, lower-quality output)")
-    ap.add_argument("--sleep", type=float, default=6.0,
-                    help="Seconds between API calls (default 6 = headroom under free-tier RPM cap)")
+    ap.add_argument("--sleep", type=float, default=10.0,
+                    help="Seconds between API calls (default 10 = safe for free-tier RPM limit)")
     ap.add_argument("--limit", type=int, default=0, help="Cap species count for testing")
     args = ap.parse_args()
 
@@ -686,7 +694,11 @@ def main() -> int:
 
     done = skipped_existing = failed = 0
     first_fail = None
+    consecutive_rl = 0
+    rate_limit_stop = False
     for idx, (sci, com) in enumerate(species):
+        if rate_limit_stop:
+            break
         slug = slugify(sci)
         pos_ref = None
         if not args.no_refs:
@@ -717,12 +729,26 @@ def main() -> int:
                                style_ref=style_ref_path)
                 path.write_bytes(data)
                 done += 1
+                consecutive_rl = 0
                 refs_tag = "+ref" if pos_ref else ""
                 anti_tag = "+anti" if anti else ""
                 note_tag = "+note" if notes.get(sci) else ""
-                print(f"  [ok]   {fname} ({len(data)//1024} KB){refs_tag}{anti_tag}{note_tag}")
+                print(f"  [{done}/{total}] {fname} ({len(data)//1024} KB){refs_tag}{anti_tag}{note_tag}")
+            except RateLimitError:
+                failed += 1
+                consecutive_rl += 1
+                first_fail = first_fail or fname
+                print(f"  [rate-limit] {fname}: retries exhausted", file=sys.stderr)
+                if consecutive_rl >= 3:
+                    remaining = total - done - skipped_existing - failed
+                    print(f"\n[rate-limit] stopped after 3 consecutive rate limits.", file=sys.stderr)
+                    print(f"  {done} generated, ~{remaining} remaining.", file=sys.stderr)
+                    print(f"  re-run the same command later to continue (existing images are skipped).", file=sys.stderr)
+                    rate_limit_stop = True
+                    break
             except (urllib.error.HTTPError, urllib.error.URLError, RuntimeError) as e:
                 failed += 1
+                consecutive_rl = 0
                 first_fail = first_fail or fname
                 print(f"  [fail] {fname}: {e}", file=sys.stderr)
             # Don't sleep after the last species' last pose.
@@ -730,7 +756,9 @@ def main() -> int:
                 time.sleep(args.sleep)
 
     print(f"\ngenerated {done} · skipped {skipped_existing} · failed {failed}")
-    if first_fail:
+    if rate_limit_stop:
+        print(f"re-run the same command to continue from where you left off", file=sys.stderr)
+    elif first_fail:
         print(f"first failure: {first_fail} (re-run without --force to retry only the misses)", file=sys.stderr)
     return 0 if failed == 0 else 1
 
