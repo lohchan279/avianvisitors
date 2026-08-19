@@ -70,8 +70,12 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/models/"
-GEMINI_DEFAULT_MODEL = "gemini-2.5-flash-image"
+# Gemini's image-out model. The endpoint changes occasionally; if you
+# get a 404 here, check Google's model catalog and bump this.
+GEMINI_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.5-flash-image:generateContent"
+)
 POSES = {1: "perched", 2: "in flight with wings spread"}
 
 # Genera where Gemini's prior collapses to Blue Jay markings unless we
@@ -445,7 +449,6 @@ def gen_one(
     anti_ref_key: str | None = None,
     species_note: str | None = None,
     style_ref: Path | None = None,
-    model: str = GEMINI_DEFAULT_MODEL,
 ) -> bytes:
     """Single Gemini call with bounded retry on 429 + transient 5xx.
     Returns raw PNG bytes.
@@ -526,7 +529,7 @@ def gen_one(
     # API key as header, NOT URL - keeps the key out of Google's
     # request logs, proxy logs, and shell history.
     req = urllib.request.Request(
-        f"{GEMINI_BASE}{model}:generateContent",
+        GEMINI_URL,
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
         method="POST",
@@ -595,8 +598,6 @@ def main() -> int:
     ap.add_argument("--ebird-region", help="eBird region code (e.g. US-CA, SG). Filters --labels when combined; standalone it fetches all species for the region")
     ap.add_argument("--ebird-key", help="eBird API key (or EBIRD_API_KEY env)")
     ap.add_argument("--gemini-key", help="Gemini API key (or GEMINI_API_KEY env)")
-    ap.add_argument("--model", default=GEMINI_DEFAULT_MODEL,
-                    help=f"Gemini model name (default: {GEMINI_DEFAULT_MODEL})")
     ap.add_argument("--out", type=Path,
                     default=Path(__file__).resolve().parents[1] / "assets" / "illustrations",
                     help="Output directory (default: avian/assets/illustrations/)")
@@ -725,8 +726,7 @@ def main() -> int:
                                positive_ref=pos_ref, anti_ref=anti,
                                anti_ref_key=anti_key_for_call,
                                species_note=notes.get(sci),
-                               style_ref=style_ref_path,
-                               model=args.model)
+                               style_ref=style_ref_path)
                 path.write_bytes(data)
                 done += 1
                 consecutive_rl = 0
