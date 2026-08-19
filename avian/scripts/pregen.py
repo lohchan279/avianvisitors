@@ -74,7 +74,7 @@ from pathlib import Path
 # get a 404 here, check Google's model catalog and bump this.
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.5-flash-image:generateContent"
+    "gemini-2.5-flash:generateContent"
 )
 POSES = {1: "perched", 2: "in flight with wings spread"}
 
