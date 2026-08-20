@@ -553,14 +553,17 @@ def gen_one(
                     retry_after = backoff
                 if e.code == 429:
                     print(f"    [429] rate limited, waiting {retry_after:.0f}s (attempt {attempt + 1}/6)...", file=sys.stderr)
+                else:
+                    print(f"    [{e.code}] server error, retrying in {retry_after:.0f}s (attempt {attempt + 1}/6)...", file=sys.stderr)
                 time.sleep(retry_after)
                 backoff = min(backoff * 2, 120.0)
                 continue
             if e.code == 429:
                 raise RateLimitError(f"rate limited after {attempt + 1} retries") from e
             raise
-        except urllib.error.URLError:
+        except urllib.error.URLError as e:
             if attempt < 5:
+                print(f"    [timeout] {e.reason}, retrying in {backoff:.0f}s (attempt {attempt + 1}/6)...", file=sys.stderr)
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 120.0)
                 continue
