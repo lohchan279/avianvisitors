@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -81,6 +82,27 @@ STYLE_IMAGES = [
 ]
 
 
+def _fetch_json(url: str) -> dict | None:
+    """GET a JSON URL with retry on 429."""
+    for attempt in range(4):
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 3:
+                wait = 15 * (attempt + 1)
+                print(f"    [429] rate limited, waiting {wait}s...", file=sys.stderr)
+                time.sleep(wait)
+                continue
+            print(f"    API error: {e}", file=sys.stderr)
+            return None
+        except urllib.error.URLError as e:
+            print(f"    network error: {e}", file=sys.stderr)
+            return None
+    return None
+
+
 def wikimedia_image_url(file_title: str) -> str | None:
     """Get the direct image URL for a Wikimedia Commons file title."""
     title = file_title.replace(" ", "_")
@@ -94,12 +116,8 @@ def wikimedia_image_url(file_title: str) -> str | None:
             "format": "json",
         })
     )
-    req = urllib.request.Request(api, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read())
-    except (urllib.error.URLError, urllib.error.HTTPError) as e:
-        print(f"    API error: {e}", file=sys.stderr)
+    data = _fetch_json(api)
+    if not data:
         return None
     pages = data.get("query", {}).get("pages", {})
     for pid, page in pages.items():
@@ -124,12 +142,8 @@ def search_wikimedia(terms: str) -> str | None:
             "format": "json",
         })
     )
-    req = urllib.request.Request(api, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read())
-    except (urllib.error.URLError, urllib.error.HTTPError) as e:
-        print(f"    search error: {e}", file=sys.stderr)
+    data = _fetch_json(api)
+    if not data:
         return None
     results = data.get("query", {}).get("search", [])
     for result in results:
@@ -140,16 +154,26 @@ def search_wikimedia(terms: str) -> str | None:
 
 
 def download(url: str, dest: Path) -> bool:
-    """Download a URL to a local path."""
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=60) as r:
-            data = r.read()
-        dest.write_bytes(data)
-        return True
-    except (urllib.error.URLError, urllib.error.HTTPError) as e:
-        print(f"    download error: {e}", file=sys.stderr)
-        return False
+    """Download a URL to a local path, with retry on 429."""
+    for attempt in range(4):
+        req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                data = r.read()
+            dest.write_bytes(data)
+            return True
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 3:
+                wait = 15 * (attempt + 1)
+                print(f"    [429] rate limited, waiting {wait}s...", file=sys.stderr)
+                time.sleep(wait)
+                continue
+            print(f"    download error: {e}", file=sys.stderr)
+            return False
+        except urllib.error.URLError as e:
+            print(f"    download error: {e}", file=sys.stderr)
+            return False
+    return False
 
 
 def main():
@@ -188,6 +212,7 @@ def main():
             ok += 1
         else:
             failed += 1
+        time.sleep(3)
 
     print(f"\nDone: {ok} downloaded, {skipped} already existed, {failed} failed.")
     if failed:
