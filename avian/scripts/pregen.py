@@ -580,47 +580,6 @@ def gen_one(
     raise RuntimeError(f"no image (finish={finish} block={block})")
 
 
-def gen_one_pollinations(
-    prompt: str,
-    sci: str,
-    com: str,
-    pose: int,
-) -> bytes:
-    """Generate via Pollinations.ai (free, no API key). Text-only prompt."""
-    body = (prompt
-            .replace("{sci_name}", sci)
-            .replace("{com_name}", com)
-            .replace("{pose}", POSES[pose])
-            .replace("{anti_ref_line}", ""))
-    encoded = urllib.parse.quote(body)
-    url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={hash(sci + str(pose)) & 0x7FFFFFFF}"
-
-    backoff = 5.0
-    for attempt in range(4):
-        req = urllib.request.Request(url, headers={"User-Agent": "AvianVisitors/1.0"})
-        try:
-            with urllib.request.urlopen(req, timeout=120) as r:
-                data = r.read()
-            if len(data) < 1024:
-                raise RuntimeError(f"image too small ({len(data)} bytes)")
-            return data
-        except urllib.error.HTTPError as e:
-            if e.code in (429, 500, 502, 503, 504) and attempt < 3:
-                print(f"    [{e.code}] pollinations error, retrying in {backoff:.0f}s (attempt {attempt + 1}/4)...", file=sys.stderr)
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 60.0)
-                continue
-            raise
-        except urllib.error.URLError as e:
-            if attempt < 3:
-                print(f"    [timeout] {e.reason}, retrying in {backoff:.0f}s (attempt {attempt + 1}/4)...", file=sys.stderr)
-                time.sleep(backoff)
-                backoff = min(backoff * 2, 60.0)
-                continue
-            raise
-    raise RuntimeError("pollinations: all retries exhausted")
-
-
 def _mime_for(p: Path) -> str:
     ext = p.suffix.lower()
     if ext in (".jpg", ".jpeg"):
@@ -666,20 +625,15 @@ def main() -> int:
     ap.add_argument("--force", action="store_true", help="Re-render even if file exists")
     ap.add_argument("--no-refs", action="store_true",
                     help="Skip the Wikipedia reference fetch (faster, lower-quality output)")
-    ap.add_argument("--backend", choices=["gemini", "pollinations"], default="gemini",
-                    help="Image generation backend (default: gemini). "
-                         "pollinations is free but text-only (no ref images)")
     ap.add_argument("--sleep", type=float, default=10.0,
                     help="Seconds between API calls (default 10 = safe for free-tier RPM limit)")
     ap.add_argument("--limit", type=int, default=0, help="Cap species count for testing")
     args = ap.parse_args()
 
     gemini_key = args.gemini_key or os.environ.get("GEMINI_API_KEY", "")
-    if not gemini_key and args.backend == "gemini":
+    if not gemini_key:
         print("error: GEMINI_API_KEY required (--gemini-key or env)", file=sys.stderr)
         return 2
-    if args.backend == "pollinations":
-        print("[backend] using Pollinations.ai (free, text-only prompts)")
 
     # Build species list
     ebird_standalone = False
@@ -771,17 +725,14 @@ def main() -> int:
                 skipped_existing += 1
                 continue
             try:
-                if args.backend == "pollinations":
-                    data = gen_one_pollinations(prompt, sci, com, pose)
-                else:
-                    style_ref_path = args.styles / select_style_ref(sci, pose)
-                    if not style_ref_path.exists():
-                        style_ref_path = None
-                    data = gen_one(gemini_key, prompt, sci, com, pose,
-                                   positive_ref=pos_ref, anti_ref=anti,
-                                   anti_ref_key=anti_key_for_call,
-                                   species_note=notes.get(sci),
-                                   style_ref=style_ref_path)
+                style_ref_path = args.styles / select_style_ref(sci, pose)
+                if not style_ref_path.exists():
+                    style_ref_path = None
+                data = gen_one(gemini_key, prompt, sci, com, pose,
+                               positive_ref=pos_ref, anti_ref=anti,
+                               anti_ref_key=anti_key_for_call,
+                               species_note=notes.get(sci),
+                               style_ref=style_ref_path)
                 path.write_bytes(data)
                 done += 1
                 consecutive_rl = 0
