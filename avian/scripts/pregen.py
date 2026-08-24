@@ -75,6 +75,9 @@ from pathlib import Path
 GEMINI_API_BASE = "https://generativelanguage.googleapis.com"
 GEMINI_MODEL = "gemini-2.5-flash-image"
 
+NVIDIA_API_BASE = "https://integrate.api.nvidia.com"
+NVIDIA_MODEL = "qwen/qwen-image"
+
 def _gemini_url(api_base: str, model: str) -> str:
     return f"{api_base.rstrip('/')}/v1beta/models/{model}:generateContent"
 POSES = {1: "perched", 2: "in flight with wings spread"}
@@ -603,6 +606,83 @@ def _mime_for(p: Path) -> str:
     return "application/octet-stream"
 
 
+def gen_one_nvidia(
+    api_key: str, prompt: str, sci: str, com: str, pose: int,
+    species_note: str | None = None,
+    api_base: str = NVIDIA_API_BASE,
+    model: str = NVIDIA_MODEL,
+) -> bytes:
+    """Generate one illustration via NVIDIA's image generation API (Qwen-Image)."""
+    body = (prompt
+            .replace("{sci_name}", sci)
+            .replace("{com_name}", com)
+            .replace("{pose}", POSES[pose])
+            .replace("{anti_ref_line}", ""))
+    if species_note:
+        body = body + "\n\nSpecies-specific note: " + species_note
+
+    url = f"{api_base.rstrip('/')}/v1/images/generations"
+    payload = {
+        "model": model,
+        "prompt": body,
+        "size": "1024x1024",
+        "response_format": "b64_json",
+        "n": 1,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+    }
+    req = urllib.request.Request(
+        url, data=json.dumps(payload).encode(),
+        headers=headers, method="POST",
+    )
+
+    backoff = 8.0
+    for attempt in range(6):
+        try:
+            with urllib.request.urlopen(req, timeout=300) as r:
+                resp = json.loads(r.read())
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt < 5:
+                ra = e.headers.get("Retry-After")
+                try:
+                    retry_after = min(float(ra) if ra else backoff, 120.0)
+                except (TypeError, ValueError):
+                    retry_after = backoff
+                if e.code == 429:
+                    print(f"    [429] rate limited, waiting {retry_after:.0f}s (attempt {attempt + 1}/6)...", file=sys.stderr)
+                else:
+                    print(f"    [{e.code}] server error, retrying in {retry_after:.0f}s (attempt {attempt + 1}/6)...", file=sys.stderr)
+                time.sleep(retry_after)
+                backoff = min(backoff * 2, 120.0)
+                continue
+            if e.code == 429:
+                raise RateLimitError(f"rate limited after {attempt + 1} retries") from e
+            raise
+        except urllib.error.URLError as e:
+            if attempt < 5:
+                print(f"    [timeout] {e.reason}, retrying in {backoff:.0f}s (attempt {attempt + 1}/6)...", file=sys.stderr)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 120.0)
+                continue
+            raise
+        except (TimeoutError, OSError) as e:
+            if attempt < 5:
+                print(f"    [timeout] {e}, retrying in {backoff:.0f}s (attempt {attempt + 1}/6)...", file=sys.stderr)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 120.0)
+                continue
+            raise
+
+    for item in resp.get("data", []):
+        b64 = item.get("b64_json")
+        if b64:
+            return base64.b64decode(b64)
+    raise RuntimeError(f"no image in NVIDIA response: {json.dumps(resp)[:200]}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -616,10 +696,12 @@ def main() -> int:
     ap.add_argument("--ebird-region", help="eBird region code (e.g. US-CA, SG). Filters --labels when combined; standalone it fetches all species for the region")
     ap.add_argument("--ebird-key", help="eBird API key (or EBIRD_API_KEY env)")
     ap.add_argument("--gemini-key", help="Gemini API key (or GEMINI_API_KEY env)")
-    ap.add_argument("--api-base", default=os.environ.get("GEMINI_API_BASE", GEMINI_API_BASE),
-                    help="API base URL (default: Google; set to https://www.moyu.info for moyu.info proxy)")
-    ap.add_argument("--model", default=os.environ.get("GEMINI_MODEL", GEMINI_MODEL),
-                    help="Model name (default: gemini-2.5-flash-image)")
+    ap.add_argument("--backend", choices=["gemini", "nvidia"], default="gemini",
+                    help="API backend: gemini (default) or nvidia (Qwen-Image via build.nvidia.com)")
+    ap.add_argument("--api-base", default=None,
+                    help="API base URL (default: auto per backend)")
+    ap.add_argument("--model", default=None,
+                    help="Model name (default: auto per backend)")
     ap.add_argument("--out", type=Path,
                     default=Path(__file__).resolve().parents[1] / "assets" / "illustrations",
                     help="Output directory (default: avian/assets/illustrations/)")
@@ -646,10 +728,19 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0, help="Cap species count for testing")
     args = ap.parse_args()
 
-    gemini_key = args.gemini_key or os.environ.get("GEMINI_API_KEY", "")
-    if not gemini_key:
-        print("error: GEMINI_API_KEY required (--gemini-key or env)", file=sys.stderr)
+    if args.api_base is None:
+        args.api_base = NVIDIA_API_BASE if args.backend == "nvidia" else os.environ.get("GEMINI_API_BASE", GEMINI_API_BASE)
+    if args.model is None:
+        args.model = NVIDIA_MODEL if args.backend == "nvidia" else os.environ.get("GEMINI_MODEL", GEMINI_MODEL)
+
+    api_key = args.gemini_key or os.environ.get("NVIDIA_API_KEY" if args.backend == "nvidia" else "GEMINI_API_KEY", "")
+    if not api_key:
+        env_name = "NVIDIA_API_KEY" if args.backend == "nvidia" else "GEMINI_API_KEY"
+        print(f"error: {env_name} required (--gemini-key or env)", file=sys.stderr)
         return 2
+
+    if args.backend == "nvidia":
+        args.no_refs = True
 
     # Build species list
     ebird_standalone = False
@@ -744,13 +835,19 @@ def main() -> int:
                 style_ref_path = args.styles / select_style_ref(sci, pose)
                 if not style_ref_path.exists():
                     style_ref_path = None
-                data = gen_one(gemini_key, prompt, sci, com, pose,
-                               positive_ref=pos_ref, anti_ref=anti,
-                               anti_ref_key=anti_key_for_call,
-                               species_note=notes.get(sci),
-                               style_ref=style_ref_path,
-                               api_base=args.api_base,
-                               model=args.model)
+                if args.backend == "nvidia":
+                    data = gen_one_nvidia(api_key, prompt, sci, com, pose,
+                                         species_note=notes.get(sci),
+                                         api_base=args.api_base,
+                                         model=args.model)
+                else:
+                    data = gen_one(api_key, prompt, sci, com, pose,
+                                  positive_ref=pos_ref, anti_ref=anti,
+                                  anti_ref_key=anti_key_for_call,
+                                  species_note=notes.get(sci),
+                                  style_ref=style_ref_path,
+                                  api_base=args.api_base,
+                                  model=args.model)
                 path.write_bytes(data)
                 done += 1
                 consecutive_rl = 0
