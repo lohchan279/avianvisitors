@@ -546,7 +546,7 @@ def gen_one(
     backoff = 8.0
     for attempt in range(6):
         try:
-            with urllib.request.urlopen(req, timeout=180) as r:
+            with urllib.request.urlopen(req, timeout=300) as r:
                 resp = json.loads(r.read())
             break
         except urllib.error.HTTPError as e:
@@ -569,6 +569,13 @@ def gen_one(
         except urllib.error.URLError as e:
             if attempt < 5:
                 print(f"    [timeout] {e.reason}, retrying in {backoff:.0f}s (attempt {attempt + 1}/6)...", file=sys.stderr)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 120.0)
+                continue
+            raise
+        except (TimeoutError, OSError) as e:
+            if attempt < 5:
+                print(f"    [timeout] {e}, retrying in {backoff:.0f}s (attempt {attempt + 1}/6)...", file=sys.stderr)
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 120.0)
                 continue
