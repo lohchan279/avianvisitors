@@ -167,7 +167,10 @@ def main() -> int:
     print("Uploading JSONL file...")
     uploaded = client.files.upload(
         file=str(jsonl_path),
-        config=types.UploadFileConfig(display_name="avian-batch-input")
+        config=types.UploadFileConfig(
+            display_name="avian-batch-input",
+            mime_type="application/jsonl",
+        )
     )
     print(f"Uploaded: {uploaded.name}")
 
