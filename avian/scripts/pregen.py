@@ -612,7 +612,7 @@ def gen_one_nvidia(
     api_base: str = NVIDIA_API_BASE,
     model: str = NVIDIA_MODEL,
 ) -> bytes:
-    """Generate one illustration via NVIDIA's image generation API (Qwen-Image)."""
+    """Generate one illustration via NVIDIA's chat/completions API (Qwen-Image)."""
     body = (prompt
             .replace("{sci_name}", sci)
             .replace("{com_name}", com)
@@ -621,17 +621,20 @@ def gen_one_nvidia(
     if species_note:
         body = body + "\n\nSpecies-specific note: " + species_note
 
-    url = f"{api_base.rstrip('/')}/v1/images/generations"
+    url = f"{api_base.rstrip('/')}/v1/chat/completions"
     payload = {
         "model": model,
-        "prompt": body,
-        "size": "1024x1024",
-        "response_format": "b64_json",
-        "n": 1,
+        "messages": [{"role": "user", "content": body}],
+        "max_tokens": 4096,
+        "stream": False,
+        "height": 1024,
+        "width": 1024,
+        "num_inference_steps": 50,
     }
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
     }
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(),
@@ -676,11 +679,23 @@ def gen_one_nvidia(
                 continue
             raise
 
-    for item in resp.get("data", []):
-        b64 = item.get("b64_json")
-        if b64:
-            return base64.b64decode(b64)
-    raise RuntimeError(f"no image in NVIDIA response: {json.dumps(resp)[:200]}")
+    for choice in resp.get("choices", []):
+        msg = choice.get("message", {})
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                img_url = None
+                if isinstance(part, dict):
+                    img_url = (part.get("image_url") or {}).get("url")
+                if img_url and "," in img_url:
+                    _, b64_data = img_url.split(",", 1)
+                    return base64.b64decode(b64_data)
+                elif img_url:
+                    return base64.b64decode(img_url)
+        elif isinstance(content, str) and content.startswith("data:image"):
+            _, b64_data = content.split(",", 1)
+            return base64.b64decode(b64_data)
+    raise RuntimeError(f"no image in NVIDIA response: {json.dumps(resp)[:300]}")
 
 
 def main() -> int:
