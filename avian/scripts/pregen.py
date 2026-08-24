@@ -72,10 +72,11 @@ from pathlib import Path
 
 # Gemini's image-out model. The endpoint changes occasionally; if you
 # get a 404 here, check Google's model catalog and bump this.
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.5-flash-image:generateContent"
-)
+GEMINI_API_BASE = "https://generativelanguage.googleapis.com"
+GEMINI_MODEL = "gemini-2.5-flash-image"
+
+def _gemini_url(api_base: str, model: str) -> str:
+    return f"{api_base.rstrip('/')}/v1beta/models/{model}:generateContent"
 POSES = {1: "perched", 2: "in flight with wings spread"}
 
 # Genera where Gemini's prior collapses to Blue Jay markings unless we
@@ -452,6 +453,8 @@ def gen_one(
     anti_ref_key: str | None = None,
     species_note: str | None = None,
     style_ref: Path | None = None,
+    api_base: str = GEMINI_API_BASE,
+    model: str = GEMINI_MODEL,
 ) -> bytes:
     """Single Gemini call with bounded retry on 429 + transient 5xx.
     Returns raw PNG bytes.
@@ -529,13 +532,15 @@ def gen_one(
         # rejecting the request shape (image-only sometimes errors).
         "generationConfig": {"responseModalities": ["TEXT", "IMAGE"]},
     }
-    # API key as header, NOT URL - keeps the key out of Google's
-    # request logs, proxy logs, and shell history.
+    url = _gemini_url(api_base, model)
+    headers = {"Content-Type": "application/json"}
+    if api_key.startswith("sk-"):
+        headers["Authorization"] = f"Bearer {api_key}"
+    else:
+        headers["x-goog-api-key"] = api_key
     req = urllib.request.Request(
-        GEMINI_URL,
-        data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
-        method="POST",
+        url, data=json.dumps(payload).encode(),
+        headers=headers, method="POST",
     )
 
     backoff = 8.0
@@ -604,6 +609,10 @@ def main() -> int:
     ap.add_argument("--ebird-region", help="eBird region code (e.g. US-CA, SG). Filters --labels when combined; standalone it fetches all species for the region")
     ap.add_argument("--ebird-key", help="eBird API key (or EBIRD_API_KEY env)")
     ap.add_argument("--gemini-key", help="Gemini API key (or GEMINI_API_KEY env)")
+    ap.add_argument("--api-base", default=os.environ.get("GEMINI_API_BASE", GEMINI_API_BASE),
+                    help="API base URL (default: Google; set to https://www.moyu.info for moyu.info proxy)")
+    ap.add_argument("--model", default=os.environ.get("GEMINI_MODEL", GEMINI_MODEL),
+                    help="Model name (default: gemini-2.5-flash-image)")
     ap.add_argument("--out", type=Path,
                     default=Path(__file__).resolve().parents[1] / "assets" / "illustrations",
                     help="Output directory (default: avian/assets/illustrations/)")
@@ -732,7 +741,9 @@ def main() -> int:
                                positive_ref=pos_ref, anti_ref=anti,
                                anti_ref_key=anti_key_for_call,
                                species_note=notes.get(sci),
-                               style_ref=style_ref_path)
+                               style_ref=style_ref_path,
+                               api_base=args.api_base,
+                               model=args.model)
                 path.write_bytes(data)
                 done += 1
                 consecutive_rl = 0
