@@ -23,6 +23,7 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -35,14 +36,31 @@ def main() -> int:
                     help="Slugs to process (e.g. calypte-anna). Default: all.")
     ap.add_argument("--dir", type=Path, default=here / "assets" / "illustrations",
                     help="Illustration directory (default: avian/assets/illustrations/)")
-    ap.add_argument("--model", default="birefnet-general",
-                    help="rembg model name (default: birefnet-general)")
+    ap.add_argument("--model", default=None,
+                    help="rembg model name (default: birefnet-general, or u2net "
+                         "on machines with under ~6 GB RAM - birefnet is ~1 GB "
+                         "and gets OOM-killed on a 4 GB Pi running BirdNET)")
     ap.add_argument("--margin", type=float, default=0.02,
                     help="Even margin around the bird, as a fraction of its "
                          "long side (default: 0.02)")
     ap.add_argument("--force", action="store_true",
                     help="Re-cut illustrations that already have transparency")
     args = ap.parse_args()
+
+    # birefnet-general is ~1 GB resident. On a 4 GB Pi already running
+    # BirdNET that reliably trips the OOM killer and takes the whole box
+    # down, so fall back to u2net unless the caller asked for a model.
+    if args.model is None:
+        args.model = "birefnet-general"
+        try:
+            total_gb = (os.sysconf("SC_PAGE_SIZE") *
+                        os.sysconf("SC_PHYS_PAGES")) / (1024 ** 3)
+            if total_gb < 6:
+                args.model = "u2net"
+                print(f"[mem] {total_gb:.1f} GB RAM detected - using u2net "
+                      f"instead of birefnet-general (pass --model to override)")
+        except (ValueError, OSError, AttributeError):
+            pass
 
     try:
         from PIL import Image

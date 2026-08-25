@@ -216,35 +216,47 @@ def main() -> int:
     if from_fork:
         print(f"Downloaded {len(from_fork)} species from community forks")
 
+    generated = []
     if need_generate:
         if not gemini_key:
-            print(f"warning: {len(need_generate)} species need generation but GEMINI_API_KEY not set",
-                  file=sys.stderr)
+            print(f"warning: {len(need_generate)} species need generation but "
+                  f"GEMINI_API_KEY not set", file=sys.stderr)
             print("  Skipping generation. Set GEMINI_API_KEY to enable auto-generation.")
         else:
             print(f"Generating {len(need_generate)} species via Gemini...")
             gen_species = [(sci, com) for sci, com, _ in need_generate]
             generate_with_pregen(gen_species, gemini_key)
+            # Only count species whose files actually landed - pregen can fail
+            # per-species (safety filters, quota) and still exit 0.
+            generated = [(sci, com, slug) for sci, com, slug in need_generate
+                         if (ILLUST_DIR / f"{slug}.png").exists()]
+            if len(generated) < len(need_generate):
+                print(f"  {len(need_generate) - len(generated)} species produced no image")
 
-    new_slugs = [slug for _, _, slug in from_fork + need_generate]
-    if not new_slugs:
+    # Cut only files that exist on disk; asking cutout.py for a missing
+    # slug is an error, and pose 2 is frequently absent.
+    slug_args = []
+    for _, _, slug in from_fork + generated:
+        for name in (slug, f"{slug}-2"):
+            if (ILLUST_DIR / f"{name}.png").exists():
+                slug_args.append(name)
+
+    if not slug_args:
         print("No new images to process.")
+        LOCKFILE.unlink(missing_ok=True)
         return 0
 
-    print(f"\nRunning cutout on {len(new_slugs)} species...")
-    slug_args = []
-    for slug in new_slugs:
-        slug_args.append(slug)
-        slug_args.append(f"{slug}-2")
+    print(f"\nRunning cutout on {len(slug_args)} images...")
     run_cutout(slug_args)
 
     print("Rebuilding masks...")
     run_build_masks()
 
+    # Only bust caches when pixels actually changed.
     bump_versions()
 
     LOCKFILE.unlink(missing_ok=True)
-    print(f"\nDone: {len(from_fork)} from forks, {len(need_generate)} generated")
+    print(f"\nDone: {len(from_fork)} from forks, {len(generated)} generated")
     return 0
 
 
