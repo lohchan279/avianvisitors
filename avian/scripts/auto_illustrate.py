@@ -44,6 +44,7 @@ DB_PATHS = [
 ]
 
 PYTHON = sys.executable
+LOCKFILE = Path("/tmp/auto_illustrate.lock")
 
 
 def slugify(sci: str) -> str:
@@ -173,6 +174,13 @@ def main() -> int:
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n=== auto_illustrate [{ts}] ===")
 
+    if LOCKFILE.exists():
+        lock_age = time.time() - LOCKFILE.stat().st_mtime
+        if lock_age < 600:
+            print("Another instance is running (lock < 10 min old). Exiting.")
+            return 0
+    LOCKFILE.write_text(str(os.getpid()))
+
     db_path = find_db()
     if not db_path:
         print("error: birds.db not found", file=sys.stderr)
@@ -235,6 +243,7 @@ def main() -> int:
 
     bump_versions()
 
+    LOCKFILE.unlink(missing_ok=True)
     print(f"\nDone: {len(from_fork)} from forks, {len(need_generate)} generated")
     return 0
 

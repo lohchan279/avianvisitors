@@ -2,11 +2,14 @@ import glob
 import json
 import logging
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
 import io
 import soundfile
+from pathlib import Path
+import time
 from time import sleep
 
 import requests
@@ -17,6 +20,39 @@ from .classes import Detection, ParseFileName
 from .notifications import sendAppriseNotifications
 
 log = logging.getLogger(__name__)
+
+_ILLUST_DIR = Path(__file__).resolve().parents[2] / "avian" / "assets" / "illustrations"
+_AUTO_ILLUST = Path(__file__).resolve().parents[2] / "avian" / "scripts" / "auto_illustrate.py"
+_ILLUST_LOCK = Path("/tmp/auto_illustrate.lock")
+
+
+def _slugify(sci: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", sci.lower()).strip("-")
+
+
+def maybe_auto_illustrate(detection: Detection):
+    """Spawn auto_illustrate.py in the background if this species has no illustration."""
+    try:
+        slug = _slugify(detection.scientific_name)
+        if (_ILLUST_DIR / f"{slug}.png").exists():
+            return
+        if not _AUTO_ILLUST.exists():
+            return
+        if _ILLUST_LOCK.exists():
+            lock_age = time.time() - _ILLUST_LOCK.stat().st_mtime
+            if lock_age < 600:
+                return
+        log.info("New species without illustration: %s — launching auto_illustrate",
+                 detection.scientific_name)
+        import sys
+        subprocess.Popen(
+            [sys.executable, str(_AUTO_ILLUST)],
+            stdout=open("/tmp/auto_illustrate.log", "a"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except Exception as e:
+        log.warning("auto_illustrate hook failed: %s", e)
 
 
 def extract(in_file, out_file, start, stop):

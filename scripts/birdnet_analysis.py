@@ -15,7 +15,7 @@ from utils.analysis import load_global_model, run_analysis
 from utils.helpers import get_settings, get_wav_files, ANALYZING_NOW
 from utils.classes import ParseFileName
 from utils.reporting import extract_detection, summary, write_to_file, write_to_db, apprise, bird_weather, heartbeat, \
-    update_json_file
+    update_json_file, maybe_auto_illustrate
 
 shutdown = False
 
@@ -115,6 +115,7 @@ def handle_reporting_queue(queue):
                 log.info('%s;%s', summary(file, detection), os.path.basename(detection.file_name_extr))
                 write_to_file(file, detection)
                 write_to_db(file, detection)
+                maybe_auto_illustrate(detection)
             apprise(file, detections)
             bird_weather(file, detections)
             heartbeat()
