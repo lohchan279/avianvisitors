@@ -258,7 +258,7 @@
       // Count -> area exponent. ~0.65 keeps the visual hierarchy
       // legible (n=400 reads ~5× bigger than n=30) without the
       // loudest bird drowning everything else.
-      countExp: 0.65,
+      countExp: 0.45,
       // Floor: every species in the dataset must be visible, even
       // n=1. Tracks species count so a tiny rare bird stays
       // recognisable on a crowded plate.
