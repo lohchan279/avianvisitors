@@ -69,7 +69,13 @@ def main() -> int:
         from utils.analysis import run_analysis, load_global_model
         from utils.classes import ParseFileName
     except ImportError as e:
-        print(f"error: run this from the BirdNET-Pi scripts/ directory ({e})",
+        print(f"error: {e}", file=sys.stderr)
+        print("\nThis needs BirdNET's own virtualenv - the one the analyzer "
+              "service runs, which has librosa and the TF runtime. It is NOT "
+              "the venv used for the illustration scripts. Try:\n"
+              "    ~/BirdNET-Pi/birdnet/bin/python3 score_file.py <files>\n"
+              "Check the exact interpreter with:\n"
+              "    grep -h ExecStart /etc/systemd/system/birdnet_analysis.service",
               file=sys.stderr)
         return 2
 
