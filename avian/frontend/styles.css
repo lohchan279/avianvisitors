@@ -1702,11 +1702,20 @@ body.av-local #dd-items  { display: block; }
 
 /* ============ Collage labels ============ */
 /* Handwritten face (Caveat, OFL - license alongside the font file).
-   Loaded lazily: nothing references 'Hand' until labels are on. The
-   ./fonts/... path resolves through the production webroot link. */
+   Loaded lazily: nothing references 'Hand' until labels are on.
+
+   Two sources because the two supported layouts put the font in
+   different places, and a stylesheet cannot know which one it is
+   served from. Upstream's webroot link exposes ./fonts/; a station
+   serving the repo directly reaches it through ./avian/frontend/.
+   The browser walks this list until one loads, so whichever layout
+   applies, the face resolves - and a station that has both pays only
+   for the first. Without a working source the labels silently fall
+   back to `cursive`, which is a script serif on iOS, not handwriting. */
 @font-face {
   font-family: 'Hand';
-  src: url('./fonts/Caveat.ttf') format('truetype');
+  src: url('./fonts/Caveat.ttf') format('truetype'),
+       url('./avian/frontend/fonts/Caveat.ttf') format('truetype');
   font-weight: 400 700;
   font-display: swap;
 }
