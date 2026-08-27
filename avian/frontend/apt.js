@@ -2,7 +2,7 @@
   var PLACEHOLDER = [{ "sci": "Calypte anna", "com": "Anna's Hummingbird", "featured": true }, { "sci": "Passer domesticus", "com": "House Sparrow" }, { "sci": "Haemorhous mexicanus", "com": "House Finch" }, { "sci": "Turdus migratorius", "com": "American Robin" }, { "sci": "Zenaida macroura", "com": "Mourning Dove" }, { "sci": "Spinus psaltria", "com": "Lesser Goldfinch" }, { "sci": "Zonotrichia leucophrys", "com": "White-crowned Sparrow" }, { "sci": "Aphelocoma californica", "com": "California Scrub-Jay" }, { "sci": "Mimus polyglottos", "com": "Northern Mockingbird" }, { "sci": "Sayornis nigricans", "com": "Black Phoebe" }, { "sci": "Larus occidentalis", "com": "Western Gull" }, { "sci": "Corvus brachyrhynchos", "com": "American Crow" }];
   // Bumped whenever the offline sketch build changes, so the browser
   // doesn't keep a stale cache after we regenerate the sketches.
-  var SKETCH_VERSION = 'r20'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species
+  var SKETCH_VERSION = 'r21'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species
   // re-rendered (perched + flight) with clean cutouts.
   // Cache-bust for /api/img - bump whenever a bird gets re-rendered via
   // /api/regen or whenever you need every CF DC to drop its cached copy.
@@ -10,7 +10,7 @@
   // equivalent to a global cache purge for /api/img. (caches.default
   // .delete() in the worker only affects ONE colo at a time, so a
   // versioned URL is the only reliable way to invalidate everywhere.)
-  var IMG_VERSION = 'r20'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species re-rendered
+  var IMG_VERSION = 'r21'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species re-rendered
   // with clean cutouts, so drop every cached copy.
 
   // ---- Sliding pill helper ----
@@ -2378,6 +2378,12 @@
     grid.style.removeProperty('height');
     grid.style.removeProperty('--pack-gap');
     grid.removeAttribute('data-mode');
+    // stamps.css loads after styles.css and sets a bare .atlas-grid rule
+    // (auto-fit over --pack-cell). Same specificity, later cascade, so it
+    // wins - and with --pack-cell unset the track list is invalid and the
+    // grid collapses to one column. This attribute lets the card rules
+    // out-specify it rather than depending on file order.
+    grid.setAttribute('data-render', 'cards');
 
     var lifelist = (DATA.lifelist && DATA.lifelist.species) || [];
     var recent = (DATA.recent && DATA.recent.species) || [];
@@ -4637,6 +4643,7 @@
   function renderAtlasStamps(animate) {
     var grid = document.getElementById('atlasGrid');
     if (!grid) return;
+    grid.removeAttribute('data-render');
     var priorRects = atlasRects(grid);
 
     function showAtlasEmpty(message, hint) {
@@ -5882,7 +5889,7 @@
       // the analyzer, and a drag fires input a hundred times.
       sl.addEventListener('change', function () { queueSave(300); });
     });
-    scope.querySelectorAll('.seg:not([data-theme-seg]):not([data-labels-seg])').forEach(function (seg) {
+    scope.querySelectorAll('.seg:not([data-theme-seg]):not([data-labels-seg]):not([data-atlas-seg])').forEach(function (seg) {
       seg.querySelectorAll('button').forEach(function (b) {
         b.addEventListener('click', function () {
           seg.querySelectorAll('button').forEach(function (x) { x.setAttribute('aria-current', x === b ? 'true' : 'false'); });
@@ -7437,6 +7444,10 @@
         // Labels switcher applies + persists immediately too. The second
         // render after the handwriting face loads swaps the measured
         // fallback metrics for the real ones.
+        // Delegated from adminBody rather than bound to the seg itself:
+        // the panel's markup is rebuilt more than once while it opens, so a
+        // listener bound directly to the element can end up on a node that
+        // is later replaced. Delegation survives that.
         var atlasSeg = adminBody.querySelector('[data-atlas-seg]');
         if (atlasSeg) atlasSeg.addEventListener('click', function (ev) {
           var b = ev.target.closest('button[data-atlas]');
@@ -7445,7 +7456,18 @@
           [].forEach.call(atlasSeg.querySelectorAll('button'), function (x) {
             x.setAttribute('aria-current', x === b ? 'true' : 'false');
           });
-          if (DATA && DATA.lifelist) renderAtlas(true);
+          // Drop whatever the other renderer left: the two produce
+          // different children, and the view may be off-screen behind this
+          // overlay, so nothing else will clear it before it is shown.
+          var g = document.getElementById('atlasGrid');
+          if (g) {
+            g.innerHTML = '';
+            g.classList.remove('is-packed');
+            g.style.removeProperty('height');
+            g.style.removeProperty('--pack-gap');
+            g.removeAttribute('data-mode');
+          }
+          renderAtlas(true);
           if (typeof syncAllPills === 'function') syncAllPills();
         });
         var labelsSeg = adminBody.querySelector('[data-labels-seg]');

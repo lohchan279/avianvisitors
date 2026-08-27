@@ -2196,6 +2196,27 @@ body.postcard-open { overflow: hidden; }
     gap: 22px;
     max-width: 1280px; margin: 0 auto;
   }
+  /* Card mode has to restate its own track list. stamps.css loads after
+     this file and sets a bare .atlas-grid rule for the packed wall, which
+     wins on cascade order at equal specificity - and its auto-fit over an
+     unset --pack-cell collapses the grid to a single column. The attribute
+     selector out-specifies it, so card mode no longer depends on which
+     stylesheet happens to load last. */
+  .atlas-grid[data-render="cards"] {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    grid-auto-rows: auto;
+    grid-auto-flow: row;
+    justify-content: normal;
+    gap: 22px;
+  }
+  @media (max-width: 700px) {
+    .atlas-grid[data-render="cards"] {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+  }
+
   /* Mobile atlas: a compact 2-up grid instead of one giant card per row,
      so you can scan many birds and tap easily. Inline actions are hidden -
      tapping the card opens the detail modal, which has play/wiki/ebird +

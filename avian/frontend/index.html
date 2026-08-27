@@ -13,12 +13,12 @@
 function systemTheme(){try{return window.matchMedia&&window.matchMedia(q).matches?'dark':'light';}catch(e){return'light';}}
 function preference(){try{var v=localStorage.getItem('bird:theme:v2');if(v==='auto'||v==='light'||v==='dark')return v;var old=localStorage.getItem('bird:theme');return old==='light'||old==='dark'?old:'auto';}catch(e){return'auto';}}
 var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemTheme());})();</script>
-<link rel="stylesheet" href="./styles.css?v=r20">
-  <link rel="stylesheet" href="./stamps.css?v=r20">
-  <link rel="stylesheet" href="./stamp-batch-root.css?v=r20">
-  <link rel="stylesheet" href="./stamp-batch-a.css?v=r20">
-    <link rel="stylesheet" href="./stamp-batch-b.css?v=r20">
-  <link rel="stylesheet" href="./stamp-batch-c.css?v=r20">
+<link rel="stylesheet" href="./styles.css?v=r21">
+  <link rel="stylesheet" href="./stamps.css?v=r21">
+  <link rel="stylesheet" href="./stamp-batch-root.css?v=r21">
+  <link rel="stylesheet" href="./stamp-batch-a.css?v=r21">
+    <link rel="stylesheet" href="./stamp-batch-b.css?v=r21">
+  <link rel="stylesheet" href="./stamp-batch-c.css?v=r21">
 </head>
 <body class="av-local">
 <!-- Pill in the top-left slot, only visible on admin overlays
@@ -379,11 +379,11 @@ var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemT
   <filter id="waxBirdClean" x="-8%" y="-8%" width="116%" height="116%" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncA type="linear" slope="1.6" intercept="-.28"/></feComponentTransfer></filter>
   <filter id="waxKeyline" x="-30%" y="-22%" width="160%" height="144%" color-interpolation-filters="sRGB"><feComponentTransfer in="SourceAlpha" result="cleanAlpha"><feFuncA type="linear" slope="2.1" intercept="-.55"/></feComponentTransfer><feMorphology in="cleanAlpha" operator="dilate" radius="1.55" result="expanded"/><feFlood flood-color="#eee9de" result="cream"/><feComposite in="cream" in2="expanded" operator="in"/></filter>
 </defs></svg>
-  <script src="./stamps.js?v=r20"></script>
-  <script src="./stamp-batch-root.js?v=r20"></script>
-<script src="./stamp-batch-a.js?v=r20"></script>
-  <script src="./stamp-batch-b.js?v=r20"></script>
-<script src="./stamp-batch-c.js?v=r20"></script>
-<script src="./apt.js?v=r20"></script>
+  <script src="./stamps.js?v=r21"></script>
+  <script src="./stamp-batch-root.js?v=r21"></script>
+<script src="./stamp-batch-a.js?v=r21"></script>
+  <script src="./stamp-batch-b.js?v=r21"></script>
+<script src="./stamp-batch-c.js?v=r21"></script>
+<script src="./apt.js?v=r21"></script>
 </body>
 </html>
