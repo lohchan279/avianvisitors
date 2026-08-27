@@ -2,7 +2,7 @@
   var PLACEHOLDER = [{ "sci": "Calypte anna", "com": "Anna's Hummingbird", "featured": true }, { "sci": "Passer domesticus", "com": "House Sparrow" }, { "sci": "Haemorhous mexicanus", "com": "House Finch" }, { "sci": "Turdus migratorius", "com": "American Robin" }, { "sci": "Zenaida macroura", "com": "Mourning Dove" }, { "sci": "Spinus psaltria", "com": "Lesser Goldfinch" }, { "sci": "Zonotrichia leucophrys", "com": "White-crowned Sparrow" }, { "sci": "Aphelocoma californica", "com": "California Scrub-Jay" }, { "sci": "Mimus polyglottos", "com": "Northern Mockingbird" }, { "sci": "Sayornis nigricans", "com": "Black Phoebe" }, { "sci": "Larus occidentalis", "com": "Western Gull" }, { "sci": "Corvus brachyrhynchos", "com": "American Crow" }];
   // Bumped whenever the offline sketch build changes, so the browser
   // doesn't keep a stale cache after we regenerate the sketches.
-  var SKETCH_VERSION = 'r12'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species
+  var SKETCH_VERSION = 'r19'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species
   // re-rendered (perched + flight) with clean cutouts.
   // Cache-bust for /api/img - bump whenever a bird gets re-rendered via
   // /api/regen or whenever you need every CF DC to drop its cached copy.
@@ -10,7 +10,7 @@
   // equivalent to a global cache purge for /api/img. (caches.default
   // .delete() in the worker only affects ONE colo at a time, so a
   // versioned URL is the only reliable way to invalidate everywhere.)
-  var IMG_VERSION = 'r12'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species re-rendered
+  var IMG_VERSION = 'r19'; // r12: 84 eastern NA birds (PR #23) refined + re-cut. r11: full library restyle: every species re-rendered
   // with clean cutouts, so drop every cached copy.
 
   // ---- Sliding pill helper ----
@@ -780,6 +780,18 @@
     if (labelParam) return labelParam[1] === '1';
     return readLS('bird:labels', 'on') === 'on';
   }
+  // ---- Atlas rendering style ----
+  // Two renderers fill #atlasGrid: the stamp wall and the original detail
+  // cards. They are already CSS-separable - stamps.css only styles
+  // .atlas-grid.is-packed, so the card renderer gets the base grid simply
+  // by not setting that class. Browser preference like theme and labels;
+  // ?atlas=cards|stamps overrides so a screenshot can force either.
+  var atlasParam = /[?&]atlas=(cards|stamps)\b/.exec(location.search);
+  function atlasStyle() {
+    if (atlasParam) return atlasParam[1];
+    return readLS('bird:atlas', 'stamps') === 'cards' ? 'cards' : 'stamps';
+  }
+
   var labelCtx = document.createElement('canvas').getContext('2d');
   var edgeFitCache = {};
   // Widths in em, because advance is exactly linear in font-size and the
@@ -2356,6 +2368,250 @@
   // begins as the view settles (not while it's still sliding in). The cards'
   // `backwards` fill keeps them hidden during the lead, so there's no flash.
   // In-place re-renders (sort change) pass no lead - they fire immediately.
+  function renderAtlasCards(animate) {
+    var grid = document.getElementById('atlasGrid');
+    if (!grid) return;
+    // Shed anything the stamp wall left behind. It owns an inline pixel
+    // height and a packed-layout class; carried into the card grid they
+    // strand the cards inside a tall empty box.
+    grid.classList.remove('is-packed');
+    grid.style.removeProperty('height');
+    grid.style.removeProperty('--pack-gap');
+    grid.removeAttribute('data-mode');
+
+    var lifelist = (DATA.lifelist && DATA.lifelist.species) || [];
+    var recent = (DATA.recent && DATA.recent.species) || [];
+    // Window count lookup: sci -> count in current window.
+    var winBySci = {};
+    recent.forEach(function (s) { winBySci[s.sci] = +s.n; });
+
+    if (!lifelist.length) {
+      grid.innerHTML = '<div class="atlas-empty">' +
+        '<p>No birds detected yet.</p>' +
+        '<p class="hint">The atlas fills up as BirdNET-Pi identifies new species.</p>' +
+        '</div>';
+      return;
+    }
+
+    // Time-window filter: when a windowed view is selected, only show
+    // species heard in that window. ALL preserves the full lifelist.
+    var isAllWindow = currentHours >= 1000000;
+    var filtered = isAllWindow
+      ? lifelist
+      : lifelist.filter(function (s) { return (winBySci[s.sci] || 0) > 0; });
+    if (!filtered.length) {
+      grid.innerHTML = '<div class="atlas-empty">' +
+        '<p>No detections in this window.</p>' +
+        '<p class="hint">Try a longer time window.</p>' +
+        '</div>';
+      return;
+    }
+
+    // Sort by the atlas-sort segmented control (defaults to "count" =
+    // most-heard all time).
+    var sortMode = (window.__atlasSort) || 'count';
+    var species = filtered.slice();
+    if (sortMode === 'count') {
+      species.sort(function (a, b) { return (+b.n) - (+a.n); });
+    } else if (sortMode === 'recent') {
+      species.sort(function (a, b) {
+        return (b.last_seen || '').localeCompare(a.last_seen || '');
+      });
+    } else if (sortMode === 'alpha') {
+      species.sort(function (a, b) {
+        return (a.com || a.sci || '').localeCompare(b.com || b.sci || '');
+      });
+    }
+
+    // A species is a "lifer" in the current view if its all-time first
+    // detection falls inside the selected window - i.e. it was newly added
+    // to the life list this 1h / 12h / 24h / 7d. Never shown for the ALL
+    // window (every species would qualify against an open-ended span).
+    var now = Date.now();
+    var windowStartMs = now - currentHours * 3600000;
+    grid.innerHTML = species.map(function (s) {
+      var total = +s.n || 0;
+      var win = winBySci[s.sci] || 0;
+      var firstMs = Date.parse((s.first_seen || '').replace(' ', 'T'));
+      var isLifer = !isAllWindow && !isNaN(firstMs) && firstMs >= windowStartMs;
+      var sketchSrc = './avian/api/cutout.php?sci=' + encodeURIComponent(s.sci) +
+        (s.com ? '&com=' + encodeURIComponent(s.com) : '') +
+        '&v=' + SKETCH_VERSION;
+      var audioSrc = './avian/api/recording.php?sci=' + encodeURIComponent(s.sci);
+      // The "all time" window makes the windowed count identical to the
+      // all-time count - collapse to a single stat rather than print the
+      // same number twice. Otherwise label the count with its span.
+      var statRows = currentHours >= 1000000
+        ? '<div><span class="n">' + fmtNK(total) + '</span><span class="lbl-inline">all time</span></div>'
+        : '<div><span class="n">' + fmtNK(win) + '</span><span class="lbl-inline">' + windowLabel(currentHours) + '</span></div>'
+        + '<div><span class="n">' + fmtNK(total) + '</span><span class="lbl-inline">all time</span></div>';
+      return ''
+        + '<article class="bird-card" data-sci="' + s.sci + '" data-audio="' + audioSrc + '">'
+        + (isLifer ? '<span class="lifer-badge" title="new to the life list in this window">lifer</span>' : '')
+        + '<div class="stat">' + statRows + '</div>'
+        + '<div class="img-wrap">'
+        + '<img loading="lazy" decoding="async" src="' + sketchSrc + '" alt="' + s.com + '">'
+        + '</div>'
+        + '<h3>' + s.com + '</h3>'
+        + '<div class="sci">' + s.sci + '</div>'
+        + '<div class="spectro-wrap" aria-hidden="true"></div>'
+        + '<div class="actions">'
+        + '<button type="button" class="chip play" data-action="play" aria-label="play recording">'
+        + ICON_PLAY + '<span>play</span>'
+        + '</button>'
+        + '<a class="chip ext" href="' + wikiUrl(s.sci) + '" target="_blank" rel="noopener" aria-label="Wikipedia">wiki</a>'
+        + '<a class="chip ext" href="' + ebirdUrl(s.sci) + '" target="_blank" rel="noopener" aria-label="eBird">ebird</a>'
+        + '</div>'
+        + '</article>';
+    }).join('');
+
+    // Wire audio playback + spectrogram load.
+    // - Only one card plays at a time. Clicking play on a different card
+    //   stops the current one first.
+    // - The spectrogram is lazily fetched on first play (saves a Pi hit
+    //   for every card visible on initial render).
+    // - If the recording endpoint 404s (no detection yet for this
+    //   species), the button reverts and shows "no audio".
+    var currentAudio = null;
+    var currentBtn = null;
+    function setBtnState(btn, state) {
+      btn.setAttribute('data-state', state);
+      if (state === 'playing') {
+        btn.setAttribute('data-active', 'true');
+        btn.innerHTML = ICON_PAUSE + '<span>stop</span>';
+      } else if (state === 'loading') {
+        btn.setAttribute('data-active', 'true');
+        btn.innerHTML = ICON_PLAY + '<span>...</span>';
+      } else if (state === 'missing') {
+        btn.setAttribute('data-active', 'false');
+        btn.innerHTML = ICON_PLAY + '<span>no audio</span>';
+        setTimeout(function () {
+          if (btn.getAttribute('data-state') === 'missing') {
+            btn.innerHTML = ICON_PLAY + '<span>play</span>';
+            btn.setAttribute('data-state', 'idle');
+          }
+        }, 2200);
+      } else {
+        btn.setAttribute('data-active', 'false');
+        btn.innerHTML = ICON_PLAY + '<span>play</span>';
+      }
+    }
+    function clearProgressOn(card) {
+      if (!card) return;
+      var sw = card.querySelector('.spectro-wrap');
+      if (sw) sw.style.setProperty('--prog', '0%');
+      card.removeAttribute('data-playing');
+    }
+    function stopCurrent() {
+      audioRelease(stopCurrent);
+      if (currentAudio) {
+        try { currentAudio.pause(); } catch (e) { }
+        currentAudio = null;
+      }
+      if (currentBtn) {
+        var card = currentBtn.closest('.bird-card');
+        clearProgressOn(card);
+        setBtnState(currentBtn, 'idle');
+        currentBtn = null;
+      }
+    }
+    grid.querySelectorAll('[data-action="play"]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var card = btn.closest('.bird-card');
+        if (btn === currentBtn) { stopCurrent(); return; }
+        stopCurrent();
+        audioClaim(stopCurrent);   // stop any modal-recording / live-stream audio
+        setBtnState(btn, 'loading');
+        currentBtn = btn;
+        // Render the spectrogram client-side from the recording's audio so
+        // it matches the active theme. paintSpectrogram paints with the
+        // --paper/--ink palette per data-theme (the same canvas the modal
+        // recordings use), instead of a fixed-colour PNG that can't follow
+        // light/dark mode. Decoded buffers are cached per URL.
+        var spectroWrap = card.querySelector('.spectro-wrap');
+        if (spectroWrap && !spectroWrap.firstChild) {
+          var canvas = document.createElement('canvas');
+          spectroWrap.appendChild(canvas);
+          var aurl = card.dataset.audio;
+          if (_decodedCache[aurl]) {
+            paintSpectrogram(canvas, _decodedCache[aurl]);
+          } else {
+            var actx = getSpecCtx();
+            if (actx) {
+              fetch(aurl)
+                .then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.arrayBuffer(); })
+                .then(function (b) { return actx.decodeAudioData(b); })
+                .then(function (buf) {
+                  _decodedCache[aurl] = buf;
+                  // Guard on document containment, not spectroWrap.contains:
+                  // a 30s refreshAll() poll can rebuild the atlas and detach
+                  // this card mid-decode. The detached wrap still "contains"
+                  // its canvas, but a detached node measures 0x0, which would
+                  // trap paintSpectrogram in its size-retry loop forever.
+                  if (document.contains(canvas)) paintSpectrogram(canvas, buf);
+                })
+                .catch(function () { if (spectroWrap.contains(canvas)) spectroWrap.removeChild(canvas); });
+            } else {
+              spectroWrap.removeChild(canvas);
+            }
+          }
+        }
+        // Start audio.
+        var audio = new Audio(card.dataset.audio);
+        audio.addEventListener('canplay', function () {
+          if (currentBtn !== btn) return; // user clicked away
+          setBtnState(btn, 'playing');
+          card.setAttribute('data-playing', 'true');
+          audio.play();
+        });
+        // Progress bar on the spectrogram strip.
+        audio.addEventListener('timeupdate', function () {
+          if (currentBtn !== btn) return;
+          var pct = audio.duration ? (audio.currentTime / audio.duration * 100) : 0;
+          if (spectroWrap) spectroWrap.style.setProperty('--prog', pct.toFixed(1) + '%');
+        });
+        audio.addEventListener('ended', function () {
+          if (currentBtn === btn) stopCurrent();
+        });
+        audio.addEventListener('error', function () {
+          if (currentBtn === btn) {
+            setBtnState(btn, 'missing');
+            clearProgressOn(card);
+            currentAudio = null; currentBtn = null;
+          }
+        });
+        currentAudio = audio;
+        audio.load();
+      });
+    });
+
+    // Spectrogram click = scrub to that position (if playing) or restart.
+    grid.addEventListener('click', function (ev) {
+      var sw = ev.target.closest && ev.target.closest('.spectro-wrap');
+      if (!sw || !sw.firstChild) return;
+      var card = sw.closest('.bird-card');
+      var btn = card.querySelector('[data-action="play"]');
+      // If this card is the active one, scrub.
+      if (currentBtn === btn && currentAudio && currentAudio.duration) {
+        var rect = sw.getBoundingClientRect();
+        var pct = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+        currentAudio.currentTime = pct * currentAudio.duration;
+      } else {
+        // Otherwise start playback from the top.
+        btn.click();
+      }
+    });
+    if (animate) playAtlasEntrance();
+  }
+
+
+  // Both renderers take (animate) and fill #atlasGrid, so the choice is a
+  // single hop. Declared as a function so the highlight wrapper further
+  // down decorates the dispatcher rather than one renderer.
+  function renderAtlas(animate) {
+    return atlasStyle() === 'cards' ? renderAtlasCards(animate) : renderAtlasStamps(animate);
+  }
+
   function playAtlasEntrance(lead) {
     lead = lead || 0;
     var grid = document.getElementById('atlasGrid');
@@ -4378,7 +4634,7 @@
     setTimeout(function () { clearInterval(t); }, 120000);
   }
 
-  function renderAtlas(animate) {
+  function renderAtlasStamps(animate) {
     var grid = document.getElementById('atlasGrid');
     if (!grid) return;
     var priorRects = atlasRects(grid);
@@ -5580,6 +5836,19 @@
       + '<div class="menu-row">'
       + '  <div><span class="label">Bird names</span><span class="hint">show names alongside birds in the collage</span></div>'
       + '  <div class="seg" data-labels-seg><i class="seg-pill" aria-hidden="true"></i>' + btn('off', 'off') + btn('on', 'on') + '</div>'
+      + '</div>';
+  }
+  // Client-side atlas-style switcher; same instant-apply pattern as the
+  // labels row. Purely a rendering choice, so it stays out of the Pi config.
+  function atlasStyleRow() {
+    var cur = atlasStyle();
+    var btn = function (v, label) {
+      return '<button type="button" data-atlas="' + v + '" aria-current="' + (cur === v ? 'true' : 'false') + '">' + label + '</button>';
+    };
+    return ''
+      + '<div class="menu-row">'
+      + '  <div><span class="label">Atlas style</span><span class="hint">stamp collection or detail cards</span></div>'
+      + '  <div class="seg" data-atlas-seg><i class="seg-pill" aria-hidden="true"></i>' + btn('stamps', 'stamps') + btn('cards', 'cards') + '</div>'
       + '</div>';
   }
   function atlasAlwaysAllRow() {
@@ -7104,6 +7373,7 @@
           + '<section>'
           + themeRow()
           + labelsRow()
+          + atlasStyleRow()
           + atlasAlwaysAllRow()
           + '</section><section>'
           + settingsSlider('CONFIDENCE', 'Confidence threshold', 'min score to log a detection', v.CONFIDENCE, 0.1, 0.95, 0.05, 2, 0.7)
@@ -7167,6 +7437,17 @@
         // Labels switcher applies + persists immediately too. The second
         // render after the handwriting face loads swaps the measured
         // fallback metrics for the real ones.
+        var atlasSeg = adminBody.querySelector('[data-atlas-seg]');
+        if (atlasSeg) atlasSeg.addEventListener('click', function (ev) {
+          var b = ev.target.closest('button[data-atlas]');
+          if (!b) return;
+          writeLS('bird:atlas', b.getAttribute('data-atlas'));
+          [].forEach.call(atlasSeg.querySelectorAll('button'), function (x) {
+            x.setAttribute('aria-current', x === b ? 'true' : 'false');
+          });
+          if (DATA && DATA.lifelist) renderAtlas(true);
+          if (typeof syncAllPills === 'function') syncAllPills();
+        });
         var labelsSeg = adminBody.querySelector('[data-labels-seg]');
         if (labelsSeg) labelsSeg.addEventListener('click', function (ev) {
           var b = ev.target.closest('button[data-labels]');
