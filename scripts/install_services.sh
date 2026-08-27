@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# This installs the services that have been selected
-set -x # Uncomment to enable debugging
-trap 'rm -f ${tmpfile}' EXIT
+# This installs the services that have been selected.
+# It is the full first-install path. Updates use reinstall_services.sh.
+set -e
+trap 'rm -f "${tmpfile-}"' EXIT
 trap 'exit 1' SIGINT SIGHUP
 tmpfile=$(mktemp)
 
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+my_dir=$(cd -- "$script_dir/.." && pwd -P)
 config_file=$my_dir/birdnet.conf
 export USER=$USER
 export HOME=$HOME
@@ -38,6 +41,31 @@ install_scripts() {
   ln -sf ${my_dir}/scripts/* /usr/local/bin/
 }
 
+install_avian_controls() {
+  local source target
+  while read -r source target; do
+    [ -f "${my_dir}/scripts/${source}" ] || continue
+    install -o root -g root -m 0755 \
+      "${my_dir}/scripts/${source}" "/usr/local/sbin/${target}"
+  done <<'EOF'
+admin_control.sh avian-admin-control
+archive_control.sh avian-archive-control
+maintenance_control.sh avian-maintenance-control
+update_birdnet.sh avian-update-control
+reinstall_services.sh avian-service-refresh
+security_refresh.sh avian-security-refresh
+link_webroot.sh avian-link-webroot
+update_caddyfile.sh avian-caddy-refresh
+EOF
+
+  # Refresh an archive the owner has already opted into. First-time setup
+  # remains a deliberate Tools action.
+  if [ -x /usr/local/sbin/avian-archive-control ] \
+    && [ -x "${HOME}/bird-archive/archive_to_drive.sh" ]; then
+    /usr/local/sbin/avian-archive-control install >/dev/null
+  fi
+}
+
 install_birdnet_analysis() {
   cat << EOF > $HOME/BirdNET-Pi/templates/birdnet_analysis.service
 [Unit]
@@ -69,23 +97,6 @@ create_necessary_dirs() {
   sudo -u ${USER} ln -fs $my_dir/include_species_list.txt $my_dir/scripts
   sudo -u ${USER} ln -fs $my_dir/whitelist_species_list.txt $my_dir/scripts
   sudo -u ${USER} ln -fs $my_dir/homepage/* ${EXTRACTED}
-  # AvianVisitors overlay. The avian/ symlink keeps assets + PHP shims
-  # reachable at /avian/. The five frontend files at the EXTRACTED root
-  # make the collage the default index for http://birdnet.local/ -
-  # the matching try_files override in update_caddyfile.sh teaches
-  # php_fastcgi to prefer index.html over index.php at the root. The
-  # stock BirdNET-Pi UI stays reachable at http://birdnet.local/index.php
-  # for anyone who wants to drop into the legacy admin pages.
-  if [ -d $my_dir/avian ]; then
-    sudo -u ${USER} ln -fs $my_dir/avian ${EXTRACTED}/avian
-    sudo -u ${USER} ln -fs $my_dir/avian/frontend/index.html ${EXTRACTED}/index.html
-    sudo -u ${USER} ln -fs $my_dir/avian/frontend/styles.css ${EXTRACTED}/styles.css
-    sudo -u ${USER} ln -fs $my_dir/avian/frontend/apt.js    ${EXTRACTED}/apt.js
-    sudo -u ${USER} ln -fs $my_dir/avian/frontend/masks.json ${EXTRACTED}/masks.json
-    sudo -u ${USER} ln -fs $my_dir/avian/frontend/dims.json  ${EXTRACTED}/dims.json
-    sudo -u ${USER} ln -fs $my_dir/avian/frontend/nest.webp  ${EXTRACTED}/nest.webp
-    sudo -u ${USER} ln -fs $my_dir/avian/assets/favicon.png  ${EXTRACTED}/favicon.png
-  fi
   sudo -u ${USER} ln -fs $my_dir/model/labels.txt ${my_dir}/scripts
   sudo -u ${USER} ln -fs $my_dir/scripts ${EXTRACTED}
   sudo -u ${USER} ln -fs $my_dir/scripts/play.php ${EXTRACTED}
@@ -95,20 +106,19 @@ create_necessary_dirs() {
   sudo -u ${USER} ln -fs $my_dir/scripts/todays_detections.php ${EXTRACTED}
   sudo -u ${USER} ln -fs $my_dir/scripts/history.php ${EXTRACTED}
   sudo -u ${USER} ln -fs $my_dir/scripts/weekly_report.php ${EXTRACTED}
-  # favicon.ico -> AvianVisitors PNG when the overlay is present (modern
-  # browsers accept image/png for the .ico path); fall back to the stock
-  # BirdNET-Pi favicon.ico otherwise so plain installs still get an icon.
-  if [ -d $my_dir/avian ]; then
-    sudo -u ${USER} ln -fs $my_dir/avian/assets/favicon.png ${EXTRACTED}/favicon.ico
-  else
-    sudo -u ${USER} ln -fs $my_dir/homepage/images/favicon.ico ${EXTRACTED}
+  if [ ! -x /usr/local/sbin/avian-link-webroot ]; then
+    echo "AvianVisitors webroot helper is not installed" >&2
+    return 1
+  fi
+  if ! /usr/local/sbin/avian-link-webroot "${my_dir}" "${EXTRACTED}" "${USER}"; then
+    echo "Could not create the AvianVisitors webroot links" >&2
+    return 1
   fi
   sudo -u ${USER} ln -fs ${HOME}/phpsysinfo ${EXTRACTED}
   sudo -u ${USER} ln -fs $my_dir/templates/phpsysinfo.ini ${HOME}/phpsysinfo/
   sudo -u ${USER} ln -fs $my_dir/templates/green_bootstrap.css ${HOME}/phpsysinfo/templates/
   sudo -u ${USER} ln -fs $my_dir/templates/index_bootstrap.html ${HOME}/phpsysinfo/templates/html
   sudo -u ${USER} ln -sf $my_dir/model/labels_nm/labels_en.txt $my_dir/model/labels_flickr.txt
-  chmod -R g+rw $my_dir
   chmod -R g+rw ${RECS_DIR}
 }
 
@@ -174,78 +184,11 @@ EOF
 }
 
 install_Caddyfile() {
-  [ -d /etc/caddy ] || mkdir /etc/caddy
-  if [ -f /etc/caddy/Caddyfile ];then
-    cp /etc/caddy/Caddyfile{,.original}
-  fi
-  if ! [ -z ${CADDY_PWD} ];then
-  HASHWORD=$(caddy hash-password --plaintext ${CADDY_PWD})
-  cat << EOF > /etc/caddy/Caddyfile
-http:// ${BIRDNETPI_URL} {
-  root * ${EXTRACTED}
-  file_server browse
-  handle /By_Date/* {
-    file_server browse
-  }
-  handle /Charts/* {
-    file_server browse
-  }
-  basicauth /views.php?view=File* {
-    birdnet ${HASHWORD}
-  }
-  basicauth /Processed* {
-    birdnet ${HASHWORD}
-  }
-  basicauth /scripts* {
-    birdnet ${HASHWORD}
-  }
-  basicauth /stream {
-    birdnet ${HASHWORD}
-  }
-  basicauth /phpsysinfo* {
-    birdnet ${HASHWORD}
-  }
-  basicauth /terminal* {
-    birdnet ${HASHWORD}
-  }
-  reverse_proxy /stream localhost:8000
-  php_fastcgi unix//run/php/php-fpm.sock
-  reverse_proxy /log* localhost:8080
-  reverse_proxy /stats* localhost:8501
-  reverse_proxy /terminal* localhost:8888
-}
-EOF
-  else
-    cat << EOF > /etc/caddy/Caddyfile
-http:// ${BIRDNETPI_URL} {
-  root * ${EXTRACTED}
-  file_server browse
-  handle /By_Date/* {
-    file_server browse
-  }
-  handle /Charts/* {
-    file_server browse
-  }
-  reverse_proxy /stream localhost:8000
-  php_fastcgi unix//run/php/php-fpm.sock
-  reverse_proxy /log* localhost:8080
-  reverse_proxy /stats* localhost:8501
-  reverse_proxy /terminal* localhost:8888
-}
-EOF
-  fi
-
   systemctl enable caddy
-  usermod -aG $USER caddy
+  usermod -aG "$USER" caddy
   usermod -aG video caddy
-  chmod g+r+x $HOME
-
-  # Serve the AvianVisitors collage at / rather than the stock BirdNET-Pi UI.
-  # The Caddyfile written above is the stock one (hardcoded php-fpm.sock, no
-  # index.html try_files override); re-apply both through update_caddyfile.sh,
-  # the single source of truth, so / serves index.html not index.php. Run it
-  # last so it wins.
-  "$HOME/BirdNET-Pi/scripts/update_caddyfile.sh"
+  chmod g+rx "$HOME"
+  "${my_dir}/scripts/update_caddyfile.sh"
 }
 
 install_avahi_aliases() {
@@ -363,40 +306,6 @@ configure_caddy_php() {
   echo "Configuring PHP for Caddy"
   sed -i 's/www-data/caddy/g' /etc/php/*/fpm/pool.d/www.conf
   systemctl restart php\*-fpm.service
-  echo "Adding Caddy sudoers rule"
-  cat << EOF > /etc/sudoers.d/010_caddy-nopasswd
-caddy ALL=(ALL) NOPASSWD: ALL
-EOF
-  chmod 0440 /etc/sudoers.d/010_caddy-nopasswd
-  # AvianVisitors admin overlay needs to restart whitelisted units and
-  # tail their journal. The 010 rule above already covers everything via
-  # NOPASSWD: ALL - this 020 rule pins the exact commands we depend on
-  # so the admin overlay stays working even if a future upstream change
-  # tightens 010. See SECURITY.md for the longer story.
-  if [ -d $my_dir/avian ]; then
-    echo "Adding AvianVisitors admin allowlist"
-    cat << EOF > /etc/sudoers.d/020_avian-admin
-caddy ALL=(root) NOPASSWD: \\
-    /bin/systemctl restart birdnet_recording, \\
-    /bin/systemctl restart birdnet_analysis, \\
-    /bin/systemctl restart birdnet_log, \\
-    /bin/systemctl restart birdnet_stats, \\
-    /bin/systemctl restart spectrogram_viewer, \\
-    /bin/systemctl restart livestream, \\
-    /bin/systemctl restart icecast2, \\
-    /bin/systemctl restart caddy, \\
-    /bin/journalctl -u birdnet_recording *, \\
-    /bin/journalctl -u birdnet_analysis *, \\
-    /bin/journalctl -u birdnet_log *, \\
-    /bin/journalctl -u birdnet_stats *, \\
-    /bin/journalctl -u spectrogram_viewer *, \\
-    /bin/journalctl -u livestream *, \\
-    /bin/journalctl -u icecast2 *, \\
-    /bin/journalctl -u caddy *
-EOF
-    chmod 0440 /etc/sudoers.d/020_avian-admin
-    visudo -c -f /etc/sudoers.d/020_avian-admin >/dev/null
-  fi
 }
 
 install_phpsysinfo() {
@@ -470,6 +379,7 @@ install_services() {
 
   install_depends
   install_scripts
+  install_avian_controls
   install_Caddyfile
   install_avahi_aliases
   install_birdnet_analysis
@@ -496,9 +406,10 @@ install_services() {
 
 if [ -f ${config_file} ];then
   source ${config_file}
-  source install_helpers.sh
+  source "${my_dir}/scripts/install_helpers.sh"
   install_services
   chown_things
+  /usr/local/sbin/avian-security-refresh
 else
   echo "Unable to find a configuration file. Please make sure that $config_file exists."
 fi
