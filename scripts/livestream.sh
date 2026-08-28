@@ -12,8 +12,28 @@ if [ "$LOGGING_LEVEL" == "info" ] || [ "$LOGGING_LEVEL" == "debug" ];then
   set -x
 fi
 
+# The stream's audio filters. ffmpeg honours only the LAST -af, so the
+# frequency shift and any station filter have to be composed into one
+# chain rather than passed as two flags - otherwise setting one silently
+# disables the other.
+FILTER_CHAIN=""
 if [ "$ACTIVATE_FREQSHIFT_IN_LIVESTREAM" == "true" ]; then
-  FREQSHIFT_OPT='-af rubberband=pitch='${FREQSHIFT_LO}'/'${FREQSHIFT_HI}
+  FILTER_CHAIN="rubberband=pitch=${FREQSHIFT_LO}/${FREQSHIFT_HI}"
+fi
+
+# LIVESTREAM_FILTER is an optional ffmpeg filter chain applied to the LIVE
+# STREAM ONLY. The recordings BirdNET analyses come from a separate arecord
+# pipeline and are untouched, so this changes what a listener hears without
+# affecting detection. Useful where the microphone is omnidirectional and
+# ambient noise sits outside the birds' band, e.g.
+#   LIVESTREAM_FILTER="highpass=f=900,lowpass=f=10000"
+if [ -n "${LIVESTREAM_FILTER:-}" ]; then
+  FILTER_CHAIN="${FILTER_CHAIN:+$FILTER_CHAIN,}${LIVESTREAM_FILTER}"
+fi
+
+FREQSHIFT_OPT=""
+if [ -n "$FILTER_CHAIN" ]; then
+  FREQSHIFT_OPT="-af $FILTER_CHAIN"
 fi
 
 if [ -z ${REC_CARD} ];then
