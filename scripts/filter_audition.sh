@@ -71,7 +71,8 @@ CANDIDATES=(
 )
 
 mkdir -p "$OUT" || { echo "error: cannot write $OUT" >&2; exit 1; }
-rm -f "$OUT"/*.mp3
+rm -f "$OUT"/*.mp3 "$OUT"/index.html
+cards=""
 
 echo "source : $(basename "$SRC")  (first ${MAXLEN}s)"
 echo "floor  : $floor dB within 900 Hz-10 kHz"
@@ -104,20 +105,65 @@ for c in "${CANDIDATES[@]}"; do
              mn=v[1]; mx=v[q];
              printf "%.1f", mx-mn }')
   printf "%-18s %8s %8s  %s\n" "$name" "$lev" "$fl" "$chain"
+
+  label=$(echo "$name" | sed 's/^[0-9]*-//; s/-/ /g')
+  num="${name%%-*}"
+  cards+="<section><h2><span class=\"n\">${num}</span>${label}</h2>"
+  cards+="<audio controls preload=\"none\" src=\"${name}.mp3\"></audio>"
+  cards+="<p class=\"m\">level ${lev} dB · fluctuation ${fl} dB</p>"
+  cards+="<code>${chain}</code></section>"
 done
 
-host=$(hostname 2>/dev/null || echo ghlyms)
+# The web server does not offer a directory listing for this folder, so
+# write the page that plays them.
+{
+  cat <<'HTMLHEAD'
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Filter audition</title><style>
+:root{color-scheme:light dark;--bg:#fbfaf7;--fg:#1a1a18;--mut:#6b6a65;--line:#dedcd5;--card:#fff}
+@media(prefers-color-scheme:dark){:root{--bg:#16161a;--fg:#e9e8e4;--mut:#9a988f;--line:#2e2e34;--card:#1e1e23}}
+*{box-sizing:border-box}
+body{margin:0;padding:24px 18px 64px;background:var(--bg);color:var(--fg);
+font:16px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:640px;margin:0 auto}
+h1{font-size:1.35rem;margin:0 0 4px}
+.sub{color:var(--mut);font-size:.9rem;margin:0 0 22px}
+.how{border-left:3px solid var(--line);padding:2px 0 2px 14px;margin:0 0 26px;
+color:var(--mut);font-size:.9rem}
+.how b{color:var(--fg)}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;
+padding:14px 16px;margin:0 0 14px}
+h2{font-size:1rem;margin:0 0 10px;display:flex;align-items:center;gap:9px}
+.n{display:inline-flex;align-items:center;justify-content:center;width:23px;height:23px;
+border-radius:50%;background:var(--fg);color:var(--bg);font-size:.78rem;flex:none}
+audio{width:100%;display:block}
+.m{color:var(--mut);font-size:.82rem;margin:9px 0 6px}
+code{display:block;color:var(--mut);font-size:.74rem;word-break:break-all;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+</style></head><body><main>
+<h1>Filter audition</h1>
+HTMLHEAD
+  echo "<p class=\"sub\">$(basename "$SRC") · first ${MAXLEN}s · floor ${floor} dB</p>"
+  cat <<'HTMLMID'
+<p class="how">Play <b>1 baseline</b> first — that is what is running now — then
+each in turn. Two questions: is the rain-like bed <b>quieter</b>, and do the
+calls still sound <b>natural</b> (nothing watery, no smearing on the tail of a
+call)? The winner is whichever is quietest without sounding processed. The
+numbers are only a hint about where to listen — trust your ears over them.</p>
+HTMLMID
+  echo "$cards"
+  echo "</main></body></html>"
+} > "$OUT/index.html"
+
+host=$(hostname 2>/dev/null | tr 'A-Z' 'a-z' || echo ghlyms)
 echo
-echo "Listen at:  http://${host}.local/filtertest/"
-echo "            (or your usual site address, then /filtertest/)"
+echo "Listen at:  http://${host}.local/filtertest/index.html"
+echo "            (or your usual site address, then /filtertest/index.html)"
 cat <<'EOF'
 
-Play 1-baseline first, then each in turn. What to listen for:
-  - is the rain-like bed quieter?
-  - do the bird calls still sound natural - no watery or underwater
-    quality, no smearing on the tail of a call?
-The best one is whichever is quietest WITHOUT sounding processed. Tell me
-the number and it becomes the LIVESTREAM_FILTER setting.
+That page plays all five in order. Pick whichever is quietest without
+sounding processed, and tell me the number.
 
 Remove the files afterwards with:  ./filter_audition.sh --clean
 EOF
