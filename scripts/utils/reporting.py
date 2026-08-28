@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import tempfile
@@ -55,9 +56,39 @@ def maybe_auto_illustrate(detection: Detection):
         log.warning("auto_illustrate hook failed: %s", e)
 
 
+def extraction_effects():
+    """Optional sox effects appended to every saved detection clip.
+
+    EXTRACTION_FILTER in birdnet.conf, e.g. "highpass 900 lowpass 10000".
+    This runs after analysis, on the clip that gets written to
+    BirdSongs/Extracted - so it changes what you hear on the site and what
+    the spectrogram shows, and cannot change a confidence score. The audio
+    BirdNET scored, and the soundscape sent to BirdWeather, are both the
+    untouched 15-second recording.
+
+    Note that the filtered clip is what gets kept: the unfiltered version of
+    a detection is only in the raw recording, which is rotated away.
+    """
+    try:
+        raw = get_settings().get('EXTRACTION_FILTER', '').strip()
+    except Exception as e:
+        log.warning('could not read EXTRACTION_FILTER: %s', e)
+        return []
+    if not raw:
+        return []
+    try:
+        return shlex.split(raw)
+    except ValueError as e:
+        log.warning('ignoring malformed EXTRACTION_FILTER %r: %s', raw, e)
+        return []
+
+
 def extract(in_file, out_file, start, stop):
-    result = subprocess.run(['sox', '-V1', f'{in_file}', f'{out_file}', 'trim', f'={start}', f'={stop}'],
-                            check=True, capture_output=True)
+    # sox applies effects in order, so trimming first means the filter only
+    # touches the few seconds that are kept.
+    args = ['sox', '-V1', f'{in_file}', f'{out_file}', 'trim', f'={start}', f'={stop}']
+    args += extraction_effects()
+    result = subprocess.run(args, check=True, capture_output=True)
     ret = result.stdout.decode('utf-8')
     err = result.stderr.decode('utf-8')
     if err:
