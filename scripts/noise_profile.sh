@@ -104,6 +104,21 @@ for src in "${INPUTS[@]}"; do
     spread=""
   fi
 
+  # --- noise floor, and the denoiser setting that follows from it ---------
+  # afftdn subtracts the steady part of the spectrum and leaves transients,
+  # which is what separates a constant ambient bed from a bird call. Its nf
+  # must be set at the actual floor: set it too low and the filter treats
+  # the noise as signal and does nothing at all.
+  # sox reports the trough - the quietest instant - which sits below the
+  # sustained bed, and setting nf there barely does anything (measured: 2 dB
+  # of reduction at the trough, 13 dB about 8 dB above it, while a faint call
+  # only 0.7 dB above the bed still came out further ahead of it, not buried).
+  floor=$(sox "$wav" -n stats 2>&1 | awk '/RMS Tr dB/{print $4; exit}')
+  suggest=$(awk -v f="${floor:-}" 'BEGIN{
+      if (f == "") { print ""; exit }
+      n = int(f+0.5) + 8; if (n < -80) n = -80; if (n > -20) n = -20;
+      printf "%d", n }')
+
   # --- energy per band ----------------------------------------------------
   # Compared as power *density* (per Hz), not raw band power: the bands are
   # deliberately different widths, and wideband noise puts more power in a
@@ -117,7 +132,7 @@ for src in "${INPUTS[@]}"; do
     rows+="$label $db $lo $hi $note"$'\n'
   done
 
-  printf "%s" "$rows" | awk -v sp="${spread:-}" '
+  printf "%s" "$rows" | awk -v sp="${spread:-}" -v floor="${floor:-}" -v nf="${suggest:-}" '
     function log10(x) { return log(x)/log(10) }
     {
       lab[NR]=$1; db[NR]=$2; lo[NR]=$3; hi[NR]=$4; note[NR]=$5; n=NR
@@ -139,6 +154,19 @@ for src in "${INPUTS[@]}"; do
       printf "\n  densest band : %s\n", pl
       printf "  high-band falloff : %.1f dB below that at %s\n", falloff, lab[n]
       if (sp != "") printf "  steadiness   : moves %s dB across 0.25 s windows\n", sp
+      if (floor != "") printf "  noise floor  : %s dB\n", floor
+
+      # A steady bed inside the bird band cannot be removed by a highpass or
+      # a lowpass - it sits on the same frequencies as the birds. Suggest the
+      # denoiser only when that is the shape we are actually looking at.
+      if (nf != "" && lo[peaki] >= 500 && falloff >= 6) {
+        print ""
+        print "  steady broadband bed inside the bird band? For the LIVE STREAM"
+        print "  only (leave the recordings BirdNET scores alone), try:"
+        printf "    LIVESTREAM_FILTER=\"highpass=f=900,lowpass=f=10000,afftdn=nr=20:nf=%s\"\n", nf
+        print "  Judge it by ear: RMS cannot hear the watery artefacts an"
+        print "  over-aggressive setting produces. Too harsh -> lower nf by 3."
+      }
 
       print ""
       insect_band = (lo[peaki] >= 3000 && lo[peaki] < 11000)
