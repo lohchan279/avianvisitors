@@ -110,9 +110,13 @@ for src in "${INPUTS[@]}"; do
   # must be set at the actual floor: set it too low and the filter treats
   # the noise as signal and does nothing at all.
   # sox reports the trough - the quietest instant - which sits below the
-  # sustained bed, and setting nf there barely does anything (measured: 2 dB
-  # of reduction at the trough, 13 dB about 8 dB above it, while a faint call
-  # only 0.7 dB above the bed still came out further ahead of it, not buried).
+  # sustained bed, so nf wants a small margin above it. Keep that margin
+  # small: measuring separation alone says bigger is always better, but
+  # over-declaring the noise makes afftdn carve into the signal, which
+  # sounds watery and is audible long before any level metric moves. A
+  # margin of 3 dB with nr=12 keeps most of the separation (+12.8 dB
+  # against +6.9 unprocessed) at roughly half the residual fluctuation of
+  # the aggressive settings.
   floor=$(sox "$wav" -n stats 2>&1 | awk '/RMS Tr dB/{print $4; exit}')
   # nf has to describe what the denoiser will actually see. It runs after the
   # existing highpass/lowpass, so measure inside that band - a raw recording's
@@ -121,7 +125,7 @@ for src in "${INPUTS[@]}"; do
   floor_in=$(sox "$wav" -n sinc 900-10000 stats 2>&1 | awk '/RMS Tr dB/{print $4; exit}')
   suggest=$(awk -v f="${floor_in:-}" 'BEGIN{
       if (f == "") { print ""; exit }
-      n = int(f+0.5) + 8; if (n < -80) n = -80; if (n > -20) n = -20;
+      n = int(f+0.5) + 3; if (n < -80) n = -80; if (n > -20) n = -20;
       printf "%d", n }')
 
   # --- energy per band ----------------------------------------------------
@@ -171,9 +175,10 @@ for src in "${INPUTS[@]}"; do
         print ""
         print "  steady broadband bed inside the bird band? For the LIVE STREAM"
         print "  only (leave the recordings BirdNET scores alone), try:"
-        printf "    LIVESTREAM_FILTER=\"highpass=f=900,lowpass=f=10000,afftdn=nr=20:nf=%s\"\n", nf
-        print "  Judge it by ear: RMS cannot hear the watery artefacts an"
-        print "  over-aggressive setting produces. Too harsh -> lower nf by 3."
+        printf "    LIVESTREAM_FILTER=\"highpass=f=900,lowpass=f=10000,afftdn=nr=12:nf=%s\"\n", nf
+        print "  Judge it by ear: no level metric hears the watery artefacts an"
+        print "  over-aggressive setting makes. Still watery -> lower nf by 3."
+        print "  Not enough effect -> raise nf by 3, or nr to 16."
       }
 
       print ""
