@@ -114,7 +114,12 @@ for src in "${INPUTS[@]}"; do
   # of reduction at the trough, 13 dB about 8 dB above it, while a faint call
   # only 0.7 dB above the bed still came out further ahead of it, not buried).
   floor=$(sox "$wav" -n stats 2>&1 | awk '/RMS Tr dB/{print $4; exit}')
-  suggest=$(awk -v f="${floor:-}" 'BEGIN{
+  # nf has to describe what the denoiser will actually see. It runs after the
+  # existing highpass/lowpass, so measure inside that band - a raw recording's
+  # full-band floor is dominated by the low rumble the highpass already threw
+  # away, and would set nf tens of dB too high.
+  floor_in=$(sox "$wav" -n sinc 900-10000 stats 2>&1 | awk '/RMS Tr dB/{print $4; exit}')
+  suggest=$(awk -v f="${floor_in:-}" 'BEGIN{
       if (f == "") { print ""; exit }
       n = int(f+0.5) + 8; if (n < -80) n = -80; if (n > -20) n = -20;
       printf "%d", n }')
@@ -132,7 +137,8 @@ for src in "${INPUTS[@]}"; do
     rows+="$label $db $lo $hi $note"$'\n'
   done
 
-  printf "%s" "$rows" | awk -v sp="${spread:-}" -v floor="${floor:-}" -v nf="${suggest:-}" '
+  printf "%s" "$rows" | awk -v sp="${spread:-}" -v floor="${floor:-}" \
+                            -v floor_in="${floor_in:-}" -v nf="${suggest:-}" '
     function log10(x) { return log(x)/log(10) }
     {
       lab[NR]=$1; db[NR]=$2; lo[NR]=$3; hi[NR]=$4; note[NR]=$5; n=NR
@@ -154,12 +160,14 @@ for src in "${INPUTS[@]}"; do
       printf "\n  densest band : %s\n", pl
       printf "  high-band falloff : %.1f dB below that at %s\n", falloff, lab[n]
       if (sp != "") printf "  steadiness   : moves %s dB across 0.25 s windows\n", sp
-      if (floor != "") printf "  noise floor  : %s dB\n", floor
+      if (floor != "") printf "  noise floor  : %s dB full band\n", floor
+      if (floor_in != "") printf "               : %s dB within 900 Hz-10 kHz\n", floor_in
 
       # A steady bed inside the bird band cannot be removed by a highpass or
-      # a lowpass - it sits on the same frequencies as the birds. Suggest the
-      # denoiser only when that is the shape we are actually looking at.
-      if (nf != "" && lo[peaki] >= 500 && falloff >= 6) {
+      # a lowpass - it sits on the same frequencies as the birds. Offer the
+      # denoiser whenever the noise is acoustic; if it were electrical the
+      # flat-density branch below applies instead and gain is the answer.
+      if (nf != "" && falloff >= 6) {
         print ""
         print "  steady broadband bed inside the bird band? For the LIVE STREAM"
         print "  only (leave the recordings BirdNET scores alone), try:"
