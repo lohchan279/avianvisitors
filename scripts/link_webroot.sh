@@ -48,11 +48,17 @@ link_avian_visitors_webroot() {
   # Production manifest. Keep the root-level links explicit. The managed
   # Caddy policy limits the avian directory link to reviewed API endpoints
   # and static artwork, so private tooling is not served from this path.
+  #
+  # ANY new file under avian/frontend/ must be added to BOTH arrays below,
+  # in the same position - they are parallel. A file missing here is not
+  # served at all: it 404s on the site while still working from the repo
+  # checkout, so it looks fine locally and is simply absent in production.
   sources=(
     "${repo_dir}/avian"
     "${frontend_dir}/index.html"
     "${frontend_dir}/styles.css"
     "${frontend_dir}/apt.js"
+    "${frontend_dir}/local-config.js"
     "${frontend_dir}/masks.json"
     "${frontend_dir}/dims.json"
     "${frontend_dir}/nest.webp"
@@ -79,6 +85,7 @@ link_avian_visitors_webroot() {
     "index.html"
     "styles.css"
     "apt.js"
+    "local-config.js"
     "masks.json"
     "dims.json"
     "nest.webp"
