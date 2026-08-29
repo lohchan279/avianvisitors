@@ -1,0 +1,28 @@
+# dims.json and masks.json are build products of avian/scripts/build_masks.py,
+# derived entirely from whatever PNGs are in avian/assets/illustrations/. Both
+# this fork and upstream regenerate them whenever illustrations change, so a
+# textual merge of the two is meaningless - the correct resolution is always
+# "rebuild from the merged set of illustrations".
+#
+# merge=ours keeps our copy during a merge instead of raising a conflict. That
+# is not the final answer, it just avoids a pointless conflict: after merging
+# upstream, run
+#
+#     python3 avian/scripts/build_masks.py
+#
+# which picks up any illustrations the merge brought in and rewrites both files
+# correctly. Committing that rebuild is the real resolution.
+#
+# The "ours" driver has to be enabled once per clone (it is a config setting,
+# not something .gitattributes can carry):
+#
+#     git config merge.ours.driver true
+#
+# Without it git falls back to a normal merge and you get the conflict you
+# would have got anyway - so a clone that forgets this is no worse off.
+avian/frontend/dims.json   merge=ours
+avian/frontend/masks.json  merge=ours
+
+# Keep illustrations out of textual diffs entirely.
+*.png binary
+*.webp binary
