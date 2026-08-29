@@ -83,11 +83,20 @@ def main() -> int:
 
         # Keep the uncut render: the cut is destructive and the flood-fill
         # is the lower-quality path, so the upgrade pass needs the original.
+        # Best effort: raw/ is often owned by the web server user, which
+        # created it running the atlas generate button. Losing the backup
+        # costs a later re-cut at full quality; refusing to cut at all
+        # costs the illustration, so a permission error must not be fatal.
         if args.keep_raw:
-            raw_dir.mkdir(parents=True, exist_ok=True)
-            raw = raw_dir / f"{slug}.png"
-            if not raw.exists():
-                shutil.copy2(src, raw)
+            try:
+                raw_dir.mkdir(parents=True, exist_ok=True)
+                raw = raw_dir / f"{slug}.png"
+                if not raw.exists():
+                    shutil.copy2(src, raw)
+            except OSError as e:
+                print(f"  [warn] {slug}: could not keep a raw copy ({e.strerror}); "
+                      f"cutting anyway - upgrade_cutouts.py will have nothing "
+                      f"to re-cut from", file=sys.stderr)
 
         tmp = src.with_suffix(".cut.tmp.png")
         try:
@@ -98,7 +107,14 @@ def main() -> int:
             failed += 1
             continue
         os.replace(tmp, src)          # atomic: never leave a half-written png
-        record_cut(args.dir / "cuts.json", slug.removesuffix("-2"), "chroma")
+        # Past the point of no return - the image is cut. A cuts.json the
+        # web server owns must not turn a finished cut into a traceback.
+        try:
+            record_cut(args.dir / "cuts.json", slug.removesuffix("-2"), "chroma")
+        except OSError as e:
+            print(f"  [warn] {slug}: cut fine, but cuts.json is not writable "
+                  f"({e.strerror}) - not recorded for the upgrade pass",
+                  file=sys.stderr)
         from PIL import Image
         with Image.open(src) as im:
             print(f"  [cut]  {slug} -> {im.width}x{im.height}")
