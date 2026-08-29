@@ -122,8 +122,10 @@ def main() -> int:
 
     print(f"\ncut {done} · skipped {skipped} · failed {failed}")
     if done:
-        print("next: python3 build_masks.py --add " +
-              " ".join(sorted({s.removesuffix('-2') for s in args.slugs})))
+        # build_masks --add matches file stems exactly, so the flight pose
+        # has to be named in full: --add corvus-enca will not pick up
+        # corvus-enca-2, and the pose is silently left out of the tables.
+        print("next: python3 build_masks.py --add " + " ".join(sorted(args.slugs)))
     return 1 if failed and not done else 0
 
 
