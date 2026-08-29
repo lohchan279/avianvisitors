@@ -5856,7 +5856,15 @@
     // native:true they navigate in-page; otherwise they keep the old
     // open-in-new-tab behavior for the legacy BirdNET-Pi screens.
     var linksHtml = menu.map(menuItemMarkup).join('');
-    if (adminAuthMeta.lan_policy) localAudio = false;
+    // Upstream makes live audio LAN-only whenever password protection is
+    // on, because a proxied request cannot be distinguished from the open
+    // internet. liveAudioHosts is this station naming the hosts where that
+    // is not true - ghlyms.com sits behind Cloudflare Access, and the
+    // matching Caddy overlay serves /stream only to requests carrying an
+    // Access assertion. With no allowlist (stock upstream) this is exactly
+    // upstream behaviour.
+    if (adminAuthMeta.lan_policy
+      && LIVE_AUDIO_PUBLIC_HOSTS.indexOf(audioHost) === -1) localAudio = false;
     var liveAudioHtml = localAudio ?
       '<div class="live-audio" id="liveAudio" data-on="false" data-state="idle">'
       + '  <div class="pulse"></div>'
