@@ -9305,7 +9305,6 @@
           + '<section>'
           + themeRow()
           + labelsRow()
-          + atlasStyleRow()
           + atlasAlwaysAllRow()
           + atlasClassicRow()
           + settingsText('SITE_NAME', 'Station name', v.SITE_NAME || 'BirdNET-Pi', 60)
