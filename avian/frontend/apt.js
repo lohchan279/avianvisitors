@@ -280,6 +280,16 @@
   // Store the preference separately from the resolved theme on <html>.
   // New installs default to auto. Existing light and dark choices from the
   // legacy key are both preserved.
+  // Station settings live in local-config.js so they are not literals in
+  // the file upstream edits most. Absent or malformed, upstream's own
+  // defaults apply and nothing here changes behaviour.
+  function localCfg(key, fallback) {
+    try {
+      var v = window.AVIAN_LOCAL && window.AVIAN_LOCAL[key];
+      return (v === undefined || v === null) ? fallback : v;
+    } catch (e) { return fallback; }
+  }
+
   var THEME_KEY = 'bird:theme:v2';
   var LEGACY_THEME_KEY = 'bird:theme';
   var THEME_QUERY = '(prefers-color-scheme: dark)';
@@ -289,7 +299,8 @@
     var pref = readLS(THEME_KEY, '');
     if (pref === 'auto' || pref === 'light' || pref === 'dark') return pref;
     var legacy = readLS(LEGACY_THEME_KEY, '');
-    return (legacy === 'light' || legacy === 'dark') ? legacy : 'light';
+    return (legacy === 'light' || legacy === 'dark')
+      ? legacy : localCfg('themeDefault', 'auto');
   }
   function systemTheme() {
     try {
@@ -503,7 +514,7 @@
       // Count -> area exponent. ~0.65 keeps the visual hierarchy
       // legible (n=400 reads ~5× bigger than n=30) without the
       // loudest bird drowning everything else.
-      countExp: 0.35,
+      countExp: localCfg('countExp', 0.65),
       // Floor: every species in the dataset must be visible, even
       // n=1. Tracks species count so a tiny rare bird stays
       // recognisable on a crowded plate.
@@ -793,12 +804,13 @@
   // authenticates every listener before the request reaches the tunnel, so
   // the stream is named here explicitly. An allowlist rather than a general
   // "public is fine" switch: adding a host has to be a deliberate act.
-  var LIVE_AUDIO_PUBLIC_HOSTS = ['ghlyms.com'];
+  var LIVE_AUDIO_PUBLIC_HOSTS = localCfg('liveAudioHosts', []);
 
   var atlasParam = /[?&]atlas=(cards|stamps)\b/.exec(location.search);
   function atlasStyle() {
     if (atlasParam) return atlasParam[1];
-    return readLS('bird:atlas', 'cards') === 'stamps' ? 'stamps' : 'cards';
+    var dflt = localCfg('atlasDefault', 'stamps') === 'cards' ? 'cards' : 'stamps';
+    return readLS('bird:atlas', dflt) === 'cards' ? 'cards' : 'stamps';
   }
 
   var labelCtx = document.createElement('canvas').getContext('2d');
