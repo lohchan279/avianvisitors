@@ -28,6 +28,6 @@ window.AVIAN_LOCAL = {
 
   /* First-visit defaults, for a visitor with nothing saved. Anyone who has
    * picked a setting keeps their choice; these only fill the blank. */
-  atlasDefault: 'cards',   // 'cards' | 'stamps'
+  atlasDefault: 'classic', // 'classic' (the card wall) | 'stamps'
   themeDefault: 'light'    // 'light' | 'dark' | 'auto' (auto = follow the OS)
 };

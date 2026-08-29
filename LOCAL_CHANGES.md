@@ -128,6 +128,42 @@ that rarely conflicts anyway.
 
 ---
 
+## Upstream tests that fail here by design
+
+`python3 -m pytest tests/ --ignore=tests/test_analysis.py` gives **69 passed,
+4 failed** on this fork. All six of these pass on a clean upstream checkout,
+so they are fork properties, not regressions. Two causes:
+
+**The illustration library is re-encoded.** `optimize_illustrations.py` shrank
+it by ~76% (Woodhouse's Scrub-Jay perched: 55 KB here vs 413 KB upstream), so
+any test pinning upstream's exact PNG bytes cannot pass.
+
+- `test_issue_80_art.py::test_approved_perched_pose_is_unchanged` — pins a SHA256
+
+**Asset versions are one unified token, not per-file numbers.** Upstream bumps
+`styles.css?v=r188`, `stamp-batch-c.css?v=r231` and so on independently; here a
+single token covers all thirteen refs so `bump_version.sh` is one command and it
+is impossible to bump the constants without the script tag. A single token
+cannot equal six different pinned numbers.
+
+- `test_atlas_classic.py::test_classic_atlas_preference_and_renderer`
+- `test_issue_80_art.py::test_cache_revision_is_narrow_and_reaches_every_image_builder`
+- `test_stamp_issues.py::test_reviewed_stamp_issue_assignments`
+
+Both are deliberate. Check the count after a merge: **4 failures is the
+expected state — a fifth is a real regression.**
+
+`tests/test_analysis.py` needs `librosa`, which only exists in the Pi's BirdNET
+venv, so it is skipped when testing elsewhere.
+
+Note for editing `apt.js`: the atlas smoke test scans that source tracking
+quote characters and does **not** skip comments, so a lone apostrophe in a
+comment ("upstream's") hides the following closing brace from it and fails the
+test with a confusing "no closing brace". Avoid apostrophes in `apt.js`
+comments.
+
+---
+
 ## Not in git
 
 - `/etc/caddy/Caddyfile` — hand-spliced for `AVIAN_DIRECT_LOCAL` and the
