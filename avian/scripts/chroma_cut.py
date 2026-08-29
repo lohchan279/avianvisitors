@@ -18,6 +18,7 @@ Usage:
 """
 from __future__ import annotations
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -26,7 +27,24 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from generate_one import ILLUS, chroma_cut, record_cut  # noqa: E402
+from generate_one import ILLUS, chroma_cut  # noqa: E402
+
+
+def record_cut(cuts_path: Path, slug: str, kind: str) -> None:
+    """Same record as generate_one keeps, but against the directory in use.
+
+    generate_one.record_cut writes the module-level cuts.json, which is
+    wrong here: --dir can point somewhere else, and the record has to
+    follow the images it describes.
+    """
+    cuts = {}
+    if cuts_path.exists():
+        try:
+            cuts = json.loads(cuts_path.read_text())
+        except ValueError:
+            cuts = {}
+    cuts[slug] = kind
+    cuts_path.write_text(json.dumps(cuts, indent=0, sort_keys=True) + "\n")
 
 
 def already_cut(path: Path) -> bool:
@@ -80,7 +98,7 @@ def main() -> int:
             failed += 1
             continue
         os.replace(tmp, src)          # atomic: never leave a half-written png
-        record_cut(slug.removesuffix("-2"), "chroma")
+        record_cut(args.dir / "cuts.json", slug.removesuffix("-2"), "chroma")
         from PIL import Image
         with Image.open(src) as im:
             print(f"  [cut]  {slug} -> {im.width}x{im.height}")
