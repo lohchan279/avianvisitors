@@ -11,7 +11,7 @@
      resolver in apt.js so automatic dark mode never flashes light. -->
 <script>(function(){var d=document.documentElement,q='(prefers-color-scheme: dark)';
 function systemTheme(){try{return window.matchMedia&&window.matchMedia(q).matches?'dark':'light';}catch(e){return'light';}}
-function preference(){try{var v=localStorage.getItem('bird:theme:v2');if(v==='auto'||v==='light'||v==='dark')return v;var old=localStorage.getItem('bird:theme');return old==='light'||old==='dark'?old:'auto';}catch(e){return'auto';}}
+function preference(){try{var v=localStorage.getItem('bird:theme:v2');if(v==='auto'||v==='light'||v==='dark')return v;var old=localStorage.getItem('bird:theme');return old==='light'||old==='dark'?old:'light';}catch(e){return'light';}}
 var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemTheme());})();</script>
 <link rel="stylesheet" href="./styles.css?v=r23">
   <link rel="stylesheet" href="./stamps.css?v=r23">
@@ -384,6 +384,6 @@ var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemT
 <script src="./stamp-batch-a.js?v=r23"></script>
   <script src="./stamp-batch-b.js?v=r23"></script>
 <script src="./stamp-batch-c.js?v=r23"></script>
-<script src="./apt.js?v=r25"></script>
+<script src="./apt.js?v=r26"></script>
 </body>
 </html>
