@@ -50,7 +50,7 @@ upstream file.
 | `avian/frontend/local-config.js` | station settings — see below |
 | `avian/scripts/auto_illustrate.py` | illustrate newly detected species automatically |
 | `avian/scripts/chroma_cut.py` | cut a render without rembg (the Pi has no rembg) |
-| `avian/scripts/bump_version.sh` | bump the frontend cache token |
+| `avian/scripts/bump_version.sh` | bump the frontend cache token; ratchets past a high-water mark in the untracked `avian/frontend/.cache-token-high`, because a branch switch rewrites `index.html` and can otherwise reissue a token caches already hold |
 | `avian/scripts/optimize_illustrations.py` | shrink the illustration library |
 | `avian/scripts/fetch_fork_illustrations.py`, `fork_species.tsv` | pull illustrations from community forks |
 | `scripts/noise_profile.sh` | diagnose what the background noise actually is |

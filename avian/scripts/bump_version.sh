@@ -17,6 +17,13 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INDEX="$HERE/../frontend/index.html"
+# Highest token ever issued from this checkout. index.html is tracked, so a
+# branch switch rewrites it to whatever token that branch carries - which can
+# be lower than one already published. Reissuing a token means every cache
+# holding the old response keeps serving it, and the change appears not to
+# have happened. This file is untracked, so it survives branch switches and
+# ratchets the token forward.
+HIGHFILE="$HERE/../frontend/.cache-token-high"
 
 [ -r "$INDEX" ] || { echo "error: cannot read $INDEX" >&2; exit 2; }
 
@@ -29,12 +36,23 @@ if [ -z "$current" ]; then
 fi
 
 distinct=$(grep -oE '\?v=r[0-9]+' "$INDEX" | sort -u | tr '\n' ' ')
+
+high=0
+if [ -r "$HIGHFILE" ]; then
+  high=$(tr -cd '0-9' <"$HIGHFILE")
+  [ -n "$high" ] || high=0
+fi
+
 if [ "${1:-}" = "--check" ]; then
-  echo "current: r$current"
+  echo "current: r$current   (highest ever issued: r$high)"
+  [ "$high" -gt "$current" ] && echo "note: index.html is BEHIND the high-water mark - a plain bump would reissue a used token"
   echo "tokens in use: $distinct"
   grep -c '?v=r' "$INDEX" | xargs printf "versioned refs: %s\n"
   exit 0
 fi
+
+force=0
+if [ "${1:-}" = "--force" ]; then force=1; shift; fi
 
 if [ -n "${1:-}" ]; then
   next="${1#r}"
@@ -42,12 +60,21 @@ if [ -n "${1:-}" ]; then
     ''|*[!0-9]*) echo "error: version must look like r27" >&2; exit 2 ;;
   esac
 else
-  next=$((current + 1))
+  # Ratchet: step past the high-water mark, not merely past what this
+  # branch happens to carry.
+  base=$current
+  [ "$high" -gt "$base" ] && base=$high
+  next=$((base + 1))
+  [ "$high" -gt "$current" ] && \
+    echo "note: index.html carried r$current but r$high was already issued; going to r$next"
 fi
 
-if [ "$next" -lt "$current" ]; then
-  echo "warning: r$next is older than the current r$current - browsers that" >&2
-  echo "         already cached r$current will not refetch." >&2
+if [ "$next" -le "$high" ] && [ "$force" != 1 ]; then
+  echo "error: r$next has already been issued (high-water mark r$high)." >&2
+  echo "       Reissuing it serves whatever caches still hold that response," >&2
+  echo "       so the change will look like it did not happen." >&2
+  echo "       Pick a higher number, or --force if you truly mean it." >&2
+  exit 2
 fi
 
 sed -i -E "s/\?v=r[0-9]+/?v=r${next}/g" "$INDEX"
@@ -61,5 +88,8 @@ if grep -qE "var (SKETCH|IMG)_VERSION = 'r[0-9]+'" "$HERE/../frontend/apt.js" 2>
   echo "warning: apt.js still has a hardcoded version literal; it will not" >&2
   echo "         pick up this bump. Expected 'var SKETCH_VERSION = ASSET_VERSION;'" >&2
 fi
+
+printf '%s\n' "$next" >"$HIGHFILE" 2>/dev/null \
+  || echo "warning: could not record the high-water mark in $HIGHFILE" >&2
 
 echo "now hard-refresh (Ctrl-Shift-R), and purge the Cloudflare cache for the public site"

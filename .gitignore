@@ -81,3 +81,7 @@ requirements_custom.txt
 
 # Scratch input for batch_generate.py; regenerated on every run.
 avian/scripts/batch_requests.jsonl
+
+# High-water mark for the frontend cache token (see bump_version.sh).
+# Untracked on purpose: it must survive branch switches.
+avian/frontend/.cache-token-high
