@@ -183,6 +183,18 @@ comments.
   the managed config 404s the stream for any forwarded request and that
   would kill live audio on ghlyms.com. This is the sanctioned place for
   local Caddy config — put anything new here, never in the Caddyfile.
+- `/etc/avahi/avahi-daemon.conf` — `use-ipv6=no` and
+  `publish-aaaa-on-ipv4=no`, so `ghlyms.local` resolves to the LAN IPv4.
+  Caddy's `private_ranges` covers `fd00::/8` but **not** `fe80::/10`, so a
+  browser reaching the station over IPv6 link-local fails the
+  `@directAdminApi` matcher and is treated as if it came from the internet:
+  `AVIAN_FORCE_AUTH 1`, `lan_policy: true`, and live audio disappears on the
+  LAN while it still works on ghlyms.com. Diagnose with
+  `curl -sv http://ghlyms.local/avian/api/menu.php 2>&1 | grep -E "Connected to|lan_policy"`
+  from the client, not the Pi - `ping` prefers IPv4 and hides it, and Caddy
+  logs only show the address it was reached on. Chosen over adding
+  `fe80::/10` to the trusted ranges, which would mean restating
+  auth-critical routing in the site overlay.
 - Admin password — set with
   `sudo /usr/local/sbin/avian-admin-control password-reset` (12-64 letters and
   digits, SSH only). "Require password on local network" is **off**: with it
