@@ -56,6 +56,9 @@ upstream file.
 | `scripts/noise_profile.sh` | diagnose what the background noise actually is |
 | `scripts/filter_audition.sh` | compare audio filters by ear on one recording |
 | `scripts/filter_test.sh`, `scripts/score_file.py` | A/B filters against the real model |
+| `avian/api/submissions.php` | field recordings: submit, poll, confirm, reject, list |
+| `scripts/submission_worker.py` | scores submitted clips with the station's own model |
+| `scripts/install_submission_worker.sh` | installs the worker as a service |
 | `frame/serve_frame.py` | serve the collage to a networked e-paper panel |
 | `.gitattributes` | stop generated mask tables conflicting |
 
@@ -125,6 +128,7 @@ upstream's implementation.
 | `scripts/link_webroot.sh` | publishes `local-config.js` |
 | `avian/scripts/pregen.py` | bare scientific-name label files, standalone eBird-region mode, NVIDIA backend (+278/-46 — the largest local change to an upstream file) |
 | `.gitignore` | `birdnet.conf.save`, `*.whl`, `batch_requests.jsonl` |
+| `scripts/update_caddyfile.sh` | publishes `/avian/api/submissions.php` — the API path is an allowlist, and an unlisted endpoint gets `respond 404` |
 
 ---
 

@@ -693,9 +693,15 @@ $legacy_handles
   # Only the reviewed production API entry points are published. This keeps
   # deferred or locally generated handlers private if they remain in an
   # existing checkout during an update, including their source text.
+  #
+  # LOCAL: submissions.php is this fork's field-recording endpoint. It is
+  # listed here rather than routed from the site overlay on purpose - an
+  # overlay route would have to restate the php_fastcgi block, including the
+  # AVIAN_DIRECT_LOCAL env that decides whether a request is trusted as
+  # local, and getting that wrong would grant proxied requests local trust.
   @unknownAvianApi {
     path /avian/api/*
-    not path /avian/api/archive.php /avian/api/birdnet-api.php /avian/api/birdnet-status.php /avian/api/birdweather.php /avian/api/config.php /avian/api/cutout.php /avian/api/export.php /avian/api/generate.php /avian/api/maintenance.php /avian/api/menu.php /avian/api/recording.php /avian/api/spectrogram.php /avian/api/wiki.php
+    not path /avian/api/archive.php /avian/api/birdnet-api.php /avian/api/birdnet-status.php /avian/api/birdweather.php /avian/api/config.php /avian/api/cutout.php /avian/api/export.php /avian/api/generate.php /avian/api/maintenance.php /avian/api/menu.php /avian/api/recording.php /avian/api/spectrogram.php /avian/api/submissions.php /avian/api/wiki.php
   }
   handle @unknownAvianApi {
     respond 404
