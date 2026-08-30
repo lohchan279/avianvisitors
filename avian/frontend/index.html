@@ -16,6 +16,7 @@ function systemTheme(){try{return window.matchMedia&&window.matchMedia(q).matche
 function preference(){try{var v=localStorage.getItem('bird:theme:v2');if(v==='auto'||v==='light'||v==='dark')return v;var old=localStorage.getItem('bird:theme');return old==='light'||old==='dark'?old:dflt();}catch(e){return dflt();}}
 var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemTheme());})();</script>
 <link rel="stylesheet" href="./styles.css?v=r28">
+<link rel="stylesheet" href="./field.css?v=r28">
   <link rel="stylesheet" href="./stamps.css?v=r28">
   <link rel="stylesheet" href="./stamp-batch-root.css?v=r28">
   <link rel="stylesheet" href="./stamp-batch-a.css?v=r28">
@@ -390,5 +391,6 @@ var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemT
   <script src="./stamp-batch-b.js?v=r28"></script>
 <script src="./stamp-batch-c.js?v=r28"></script>
 <script src="./apt.js?v=r28"></script>
+<script src="./field.js?v=r28"></script>
 </body>
 </html>

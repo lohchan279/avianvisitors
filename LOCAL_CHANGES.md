@@ -57,6 +57,7 @@ upstream file.
 | `scripts/filter_audition.sh` | compare audio filters by ear on one recording |
 | `scripts/filter_test.sh`, `scripts/score_file.py` | A/B filters against the real model |
 | `avian/api/submissions.php` | field recordings: submit, poll, confirm, reject, list |
+| `avian/frontend/field.js`, `field.css` | the field-recording UI. Self-mounting: injects its own button and panel and asks `apt.js` for nothing, so the feature adds no conflict surface to the file upstream rewrites most |
 | `scripts/submission_worker.py` | scores submitted clips with the station's own model |
 | `scripts/install_submission_worker.sh` | installs the worker as a service |
 | `frame/serve_frame.py` | serve the collage to a networked e-paper panel |
