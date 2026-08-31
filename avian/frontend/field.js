@@ -103,14 +103,22 @@
   }
 
   function api(action, opts) {
+    var status = 0;
     return fetch(API + '?action=' + action, Object.assign(
       { credentials: 'same-origin', cache: 'no-store' }, opts || {}
     )).then(function (r) {
+      status = r.status;
       return r.json().catch(function () {
         throw new Error('the station returned something unreadable (' + r.status + ')');
       });
     }).then(function (j) {
-      if (!j || j.ok === false) throw new Error((j && j.error) || 'request failed');
+      if (!j || j.ok === false) {
+        var failure = new Error((j && j.error) || 'request failed');
+        // Carried so callers can tell "you are not signed in" - which has
+        // something to do about it - from "that went wrong", which does not.
+        failure.status = status;
+        throw failure;
+      }
       return j;
     });
   }
@@ -435,20 +443,56 @@
     });
   }
 
+  function showProblem(error) {
+    emptyEl.textContent = '';
+    emptyEl.hidden = false;
+    var locked = error && error.status === 401;
+    emptyEl.appendChild(el('span', null, locked
+      ? 'Unlock with the station admin password in the menu to see what has been caught.'
+      : String((error && error.message) || error)));
+    var again = el('button', 'field-link', locked ? 'i have unlocked' : 'try again');
+    again.type = 'button';
+    again.addEventListener('click', function () { refresh(true); });
+    emptyEl.appendChild(again);
+  }
+
+  /* The map and the catches are fetched apart on purpose. The districts
+   * are geography - they need no permission and no data - so a list that
+   * comes back unauthorized should leave you looking at Singapore with
+   * nothing shaded, not at an empty box. Loading both in one Promise.all
+   * meant one 401 hid the whole map. */
   var loading = null;
   function refresh(force) {
     if (loading && !force) return loading;
-    loading = Promise.all([loadShape(), api('list')]).then(function (both) {
-      var shape = both[0];
-      var data = both[1];
-      catches = data.submissions || [];
+
+    var drawn = loadShape().then(function (shape) {
       if (!mapSvg.querySelector('.field-land')) drawShape(shape);
-      paintHeat(data.areas || [], data.station);
-      emptyEl.hidden = true;
-      renderList();
     }).catch(function (e) {
-      emptyEl.hidden = false;
-      emptyEl.textContent = String(e.message || e);
+      showProblem(e);
+      throw e;
+    });
+
+    var listed = api('list').then(function (data) {
+      catches = data.submissions || [];
+      return data;
+    });
+    // Claim the rejection now. The real handling is below, but it does not
+    // attach until the shape has drawn, and an unclaimed rejection in the
+    // meantime surfaces as an uncaught error in the console.
+    listed.catch(function () { /* handled below */ });
+
+    loading = drawn.then(function () {
+      return listed.then(function (data) {
+        paintHeat(data.areas || [], data.station);
+        emptyEl.hidden = true;
+        renderList();
+      });
+    }).catch(function (e) {
+      // The map is already on screen if the shape arrived; only the
+      // catches are missing, so say so beside the list rather than
+      // blanking everything.
+      showProblem(e);
+      renderList();
     }).then(function () { loading = null; });
     return loading;
   }

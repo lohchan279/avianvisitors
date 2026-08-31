@@ -167,6 +167,17 @@ class FieldRecordingTests(unittest.TestCase):
         self.assertEqual(1, result.returncode, result.stdout)
         self.assertIn("already in use", result.stdout)
 
+    def test_the_map_draws_even_when_the_catches_are_refused(self):
+        # The districts are geography: no permission, no data. Fetching
+        # them together with the list meant one 401 hid the whole map and
+        # left an empty box, which reads as broken rather than locked.
+        field = self.read("avian/frontend/field.js")
+        self.assertNotIn("Promise.all([loadShape(), api('list')])", field)
+        self.assertIn("var drawn = loadShape()", field)
+        # And a refusal has to say what to do about it.
+        self.assertIn("error.status === 401", field)
+        self.assertIn("Unlock with the station admin password", field)
+
     # ---- publishing the preview at a sublink -------------------------
     def test_expose_refuses_the_mode_that_opens_the_admin_gate(self):
         # --as admin turns the password gate off, which is free on

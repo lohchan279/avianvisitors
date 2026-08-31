@@ -9,19 +9,19 @@
 <link rel="apple-touch-icon" href="./favicon.png?v=3">
 <!-- Resolve the saved preference before first paint. This mirrors the
      resolver in apt.js so automatic dark mode never flashes light. -->
-<script src="./local-config.js?v=r44"></script>
+<script src="./local-config.js?v=r45"></script>
 <script>(function(){var d=document.documentElement,q='(prefers-color-scheme: dark)';
 function dflt(){try{var c=window.AVIAN_LOCAL&&window.AVIAN_LOCAL.themeDefault;return c==='light'||c==='dark'||c==='auto'?c:'auto';}catch(e){return'auto';}}
 function systemTheme(){try{return window.matchMedia&&window.matchMedia(q).matches?'dark':'light';}catch(e){return'light';}}
 function preference(){try{var v=localStorage.getItem('bird:theme:v2');if(v==='auto'||v==='light'||v==='dark')return v;var old=localStorage.getItem('bird:theme');return old==='light'||old==='dark'?old:dflt();}catch(e){return dflt();}}
 var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemTheme());})();</script>
-<link rel="stylesheet" href="./styles.css?v=r44">
-<link rel="stylesheet" href="./field.css?v=r44">
-  <link rel="stylesheet" href="./stamps.css?v=r44">
-  <link rel="stylesheet" href="./stamp-batch-root.css?v=r44">
-  <link rel="stylesheet" href="./stamp-batch-a.css?v=r44">
-    <link rel="stylesheet" href="./stamp-batch-b.css?v=r44">
-  <link rel="stylesheet" href="./stamp-batch-c.css?v=r44">
+<link rel="stylesheet" href="./styles.css?v=r45">
+<link rel="stylesheet" href="./field.css?v=r45">
+  <link rel="stylesheet" href="./stamps.css?v=r45">
+  <link rel="stylesheet" href="./stamp-batch-root.css?v=r45">
+  <link rel="stylesheet" href="./stamp-batch-a.css?v=r45">
+    <link rel="stylesheet" href="./stamp-batch-b.css?v=r45">
+  <link rel="stylesheet" href="./stamp-batch-c.css?v=r45">
 </head>
 <body>
 <!-- Pill in the top-left slot, only visible on admin overlays
@@ -392,12 +392,12 @@ var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemT
   <filter id="waxBirdClean" x="-8%" y="-8%" width="116%" height="116%" color-interpolation-filters="sRGB"><feComponentTransfer><feFuncA type="linear" slope="1.6" intercept="-.28"/></feComponentTransfer></filter>
   <filter id="waxKeyline" x="-30%" y="-22%" width="160%" height="144%" color-interpolation-filters="sRGB"><feComponentTransfer in="SourceAlpha" result="cleanAlpha"><feFuncA type="linear" slope="2.1" intercept="-.55"/></feComponentTransfer><feMorphology in="cleanAlpha" operator="dilate" radius="1.55" result="expanded"/><feFlood flood-color="#eee9de" result="cream"/><feComposite in="cream" in2="expanded" operator="in"/></filter>
 </defs></svg>
-  <script src="./stamps.js?v=r44"></script>
-  <script src="./stamp-batch-root.js?v=r44"></script>
-<script src="./stamp-batch-a.js?v=r44"></script>
-  <script src="./stamp-batch-b.js?v=r44"></script>
-<script src="./stamp-batch-c.js?v=r44"></script>
-<script src="./apt.js?v=r44"></script>
-<script src="./field.js?v=r44"></script>
+  <script src="./stamps.js?v=r45"></script>
+  <script src="./stamp-batch-root.js?v=r45"></script>
+<script src="./stamp-batch-a.js?v=r45"></script>
+  <script src="./stamp-batch-b.js?v=r45"></script>
+<script src="./stamp-batch-c.js?v=r45"></script>
+<script src="./apt.js?v=r45"></script>
+<script src="./field.js?v=r45"></script>
 </body>
 </html>
