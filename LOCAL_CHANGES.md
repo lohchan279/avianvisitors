@@ -225,6 +225,38 @@ comments.
 
 ---
 
+## Updating the Pi
+
+`git pull` on the station will usually refuse the first time:
+
+```
+error: Your local changes to the following files would be overwritten by merge:
+	avian/frontend/index.html
+```
+
+That is not a real conflict. `bump_version.sh` rewrites the `?v=rNN`
+tokens with `sed -i` on `index.html`, which is a **tracked** file, so
+running it leaves the working tree permanently dirty. Discard it and
+re-bump afterwards — nothing is lost, because the token itself lives in
+the untracked `.cache-token-high` water mark, not in the checkout:
+
+```bash
+git checkout -- avian/frontend/index.html
+git pull
+sudo ./scripts/link_webroot.sh          # new files in the manifest
+./avian/scripts/bump_version.sh         # reissues a ratcheted token
+```
+
+`link_webroot.sh` matters whenever the manifest gained an entry. The pull
+itself swaps the live `index.html` immediately (the webroot is symlinks
+into the checkout), so between the pull and the link the site references
+a file that is not published yet — run them together.
+
+The script now says all this when it finishes, rather than leaving it to
+be discovered halfway through the next update.
+
+---
+
 ## Trying a change without touching the station
 
 **A plain `git pull` on the Pi is a deploy.** The webroot is a set of

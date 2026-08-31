@@ -93,3 +93,19 @@ printf '%s\n' "$next" >"$HIGHFILE" 2>/dev/null \
   || echo "warning: could not record the high-water mark in $HIGHFILE" >&2
 
 echo "now hard-refresh (Ctrl-Shift-R), and purge the Cloudflare cache for the public site"
+
+# index.html is tracked, so bumping it leaves the working tree dirty and
+# the next `git pull` refuses to run. Say so here rather than leaving it
+# to be discovered halfway through an update. Discarding the edit is safe:
+# the token itself lives in the untracked high-water file above, so a bump
+# after the pull reissues a correct one.
+if command -v git >/dev/null \
+  && git -C "$HERE/../.." rev-parse --git-dir >/dev/null 2>&1 \
+  && ! git -C "$HERE/../.." diff --quiet -- avian/frontend/index.html 2>/dev/null; then
+  echo
+  echo "note: index.html is tracked, so it now shows as modified and a"
+  echo "      git pull will refuse. Before the next pull:"
+  echo "          git checkout -- avian/frontend/index.html"
+  echo "      then run this script again afterwards. Nothing is lost - the"
+  echo "      high-water mark is in $(basename "$HIGHFILE"), which is untracked."
+fi
