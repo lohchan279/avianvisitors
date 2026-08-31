@@ -46,9 +46,24 @@ require_once __DIR__ . '/places.php';
 
 $identity = avian_require_admin_or_access();
 
+/**
+ * A path a preview run may redirect, honoured only under the CLI and the
+ * PHP built-in server. The station is served by FPM, so this can never
+ * move anything in production - which matters, because the two paths
+ * below are the live detections database and the live station config.
+ *
+ * avian/scripts/preview.sh uses these to point a throwaway copy of the
+ * site at a throwaway copy of the data.
+ */
+function preview_path(string $variable, string $fallback): string {
+    if (!in_array(PHP_SAPI, ['cli', 'cli-server'], true)) return $fallback;
+    $override = getenv($variable);
+    return is_string($override) && $override !== '' ? $override : $fallback;
+}
+
 $BIRDNETPI_DIR = dirname(__DIR__, 2);
-$DB_PATH = "$BIRDNETPI_DIR/scripts/birds.db";
-$CONF    = '/etc/birdnet/birdnet.conf';
+$DB_PATH = preview_path('AV_DB_FILE', "$BIRDNETPI_DIR/scripts/birds.db");
+$CONF    = preview_path('AV_BIRDNET_CONF', '/etc/birdnet/birdnet.conf');
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;   // ~8 MB; 15s of phone audio is ~250 KB
 const MAX_PENDING      = 20;                // backlog guard, not a rate limit

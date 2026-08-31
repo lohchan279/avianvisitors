@@ -38,10 +38,16 @@ const AVIAN_ACCESS_LEEWAY = 60;
 
 const AVIAN_ACCESS_CONF_DEFAULT_PATH = '/etc/birdnet/birdnet.conf';
 
-/** Test fixtures may point elsewhere; an HTTP request never can. */
+/**
+ * Test fixtures and preview runs may point elsewhere; the station cannot.
+ * FPM serves the real site, and neither SAPI below is FPM.
+ */
 function avian_access_conf_path(): string {
     $override = getenv('AV_ACCESS_CONF');
-    if (PHP_SAPI === 'cli' && is_string($override) && $override !== '') return $override;
+    if (in_array(PHP_SAPI, ['cli', 'cli-server'], true)
+        && is_string($override) && $override !== '') {
+        return $override;
+    }
     return AVIAN_ACCESS_CONF_DEFAULT_PATH;
 }
 
@@ -87,7 +93,10 @@ function avian_base64url_decode(string $value): string|false {
 
 function avian_access_cert_cache_path(): string {
     $override = getenv('AV_ACCESS_CERTS');
-    if (PHP_SAPI === 'cli' && is_string($override) && $override !== '') return $override;
+    if (in_array(PHP_SAPI, ['cli', 'cli-server'], true)
+        && is_string($override) && $override !== '') {
+        return $override;
+    }
     foreach (['/var/lib/avian-visitors', sys_get_temp_dir()] as $dir) {
         if (is_dir($dir) && is_writable($dir)) return $dir . '/access-certs.json';
     }

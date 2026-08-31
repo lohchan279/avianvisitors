@@ -62,6 +62,7 @@ upstream file.
 | `avian/api/sg-areas.php` | GENERATED. The same boundaries as `sg-map.js`, for naming a fix server-side. Deliberately **not** in the Caddy allowlist, so it is never reachable as a URL |
 | `avian/frontend/sg-map.js` | GENERATED. Singapore's 55 planning areas, ~50 KB. Lazy-loaded by `field.js` on first sight of the Map view, so a visit that never opens it pays nothing |
 | `avian/scripts/build_sg_map.py` | rebuilds both of the above from one geoBoundaries download |
+| `avian/scripts/preview.sh`, `preview-router.php`, `preview-seed.php` | run the whole site against throwaway data — see below |
 | `avian/frontend/field.js`, `field.css` | the Map view: the district map, the recorder and the list of what has been caught. Self-mounting into an empty `#v3`, so the feature costs `apt.js` two lines and nothing else |
 | `scripts/submission_worker.py` | scores submitted clips with the station's own model |
 | `tests/test_field_recordings.py`, `tests/test_field_access_auth.php` | the view wiring, the coordinate promise, and every JWT forgery worth naming |
@@ -138,13 +139,15 @@ upstream's implementation.
 | `avian/scripts/pregen.py` | bare scientific-name label files, standalone eBird-region mode, NVIDIA backend (+278/-46 — the largest local change to an upstream file) |
 | `.gitignore` | `birdnet.conf.save`, `*.whl`, `batch_requests.jsonl` |
 | `scripts/update_caddyfile.sh` | publishes `/avian/api/submissions.php` — the API path is an allowlist, and an unlisted endpoint gets `respond 404` |
+| `avian/api/admin-auth.php` | one line: `AV_REQUIRE_AUTH` is honoured under `cli-server` as well as `cli`, so the preview can run the site. FPM is neither |
+| `avian/api/birdnet-api.php` | one line: `AV_DB_FILE` under the same two SAPIs, so a preview reads a copy of the database |
 | `avian/frontend/index.html` | a fourth `<section class="view" id="v3">` (left empty; `field.js` fills it) and a fourth slider button |
 
 ---
 
 ## Upstream tests that fail here by design
 
-`python3 -m pytest tests/ --ignore=tests/test_analysis.py` gives **78 passed,
+`python3 -m pytest tests/ --ignore=tests/test_analysis.py` gives **80 passed,
 4 failed** on this fork. All four of these pass on a clean upstream checkout,
 so they are fork properties, not regressions. Two causes:
 
@@ -217,6 +220,67 @@ comments.
   Singapore, but BirdNET's model underrates introduced populations). The
   field-recording worker reads the same file, so a submission cannot
   offer a species the station itself would have refused.
+
+---
+
+## Trying a change without touching the station
+
+**A plain `git pull` on the Pi is a deploy.** The webroot is a set of
+symlinks *into this checkout* (`scripts/link_webroot.sh`), so the moment a
+pull finishes, the live `index.html`, `apt.js`, `styles.css` and the rest
+are the new ones. There is no separate release step to hold back, and the
+undo is another checkout. `link_webroot.sh` is only needed for files that
+are *new* to the manifest.
+
+Two other things reach past the frontend: `submissions.php` runs
+`ALTER TABLE` on `scripts/birds.db`, which is the same database the
+collage, the stats and the BirdWeather export read; and the worker
+*deletes* the audio of a clip it could not identify, so running it by
+hand is not a read-only act.
+
+So try it here instead:
+
+```bash
+./avian/scripts/preview.sh --seed                       # nothing real involved
+./avian/scripts/preview.sh --db ~/BirdNET-Pi/scripts/birds.db
+                                                        # a copy of the real data
+./avian/scripts/preview.sh --as access                  # arrive as an Access visitor
+```
+
+It builds a second webroot in a scratch directory, points the API at a
+copy of the database and a synthetic `birdnet.conf` whose `EXTRACTED`
+lives in that scratch directory, and serves the lot on `127.0.0.1:8080`.
+Safe on the Pi itself: it writes nothing in the repository, the real
+webroot, the real recordings or the real database.
+
+It reads the webroot manifest out of `link_webroot.sh` and the API
+allowlist out of `update_caddyfile.sh` rather than restating them, so the
+two invisible production failures both reproduce: a frontend file missing
+from the manifest 404s, and so does an endpoint missing from the
+allowlist. That is how you can see `sg-areas.php` really is unreachable.
+
+`--as access` is the interesting mode. The admin gate stays **on** and the
+preview signs a genuine Cloudflare Access assertion with a throwaway key,
+so `menu.php` still answers 401 while `submissions.php` answers 200. That
+is the property the feature exists for, demonstrated rather than asserted.
+
+What it cannot do is score a recording: that needs the BirdNET model, so
+`--seed` fabricates catches at real coordinates instead. To exercise the
+real worker without risk, give it copies of both things it writes to:
+
+```bash
+~/BirdNET-Pi/birdnet/bin/python3 scripts/submission_worker.py \
+    --once --db /tmp/copy.db --extracted /tmp/preview-recordings
+```
+
+### Preview overrides
+
+Four environment variables redirect paths, and **every one is read behind
+a `PHP_SAPI` check** that admits only `cli` and `cli-server`. The station
+is served by FPM, so none of them can affect a real request; a test pins
+that. `AV_DB_FILE`, `AV_BIRDNET_CONF`, `AV_ACCESS_CONF`/`AV_ACCESS_CERTS`,
+and `AV_REQUIRE_AUTH` — the last of which is upstream's own test override,
+widened by one SAPI.
 
 ---
 

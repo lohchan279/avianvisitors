@@ -45,7 +45,10 @@ function avian_lan_admin_auth_required(?array $server = null): bool {
     $server = $server ?? $_SERVER;
     if (hash_equals('1', (string)($server['AVIAN_FORCE_AUTH'] ?? ''))) return true;
     // Focused test override. Production stations use the root-managed state.
-    if (PHP_SAPI === 'cli') {
+    // LOCAL: cli-server as well as cli, so avian/scripts/preview.sh can run
+    // the whole site against throwaway data. The station is served by FPM,
+    // which is neither SAPI, so this cannot reach a real request.
+    if (PHP_SAPI === 'cli' || PHP_SAPI === 'cli-server') {
         $override = getenv('AV_REQUIRE_AUTH');
         if ($override === '1') return true;
         if ($override === '0') return false;

@@ -31,6 +31,8 @@ Run it as a service, or by hand:
     ~/BirdNET-Pi/birdnet/bin/python3 scripts/submission_worker.py
     ... --once        # drain the queue and exit
     ... --interval 5  # seconds between polls (default 5)
+    ... --db /tmp/copy.db --extracted /tmp/preview   # dry run, touching
+                      # nothing the station reads or serves
 """
 from __future__ import annotations
 
@@ -254,6 +256,12 @@ def main() -> int:
     ap.add_argument("--once", action="store_true", help="drain the queue and exit")
     ap.add_argument("--interval", type=float, default=5.0, help="seconds between polls")
     ap.add_argument("--db", type=Path, default=DB_PATH)
+    # --db and --extracted together are what make a dry run safe: point
+    # them at copies and this writes to nothing the station reads. It
+    # deletes the audio of a clip it cannot identify, so running it
+    # against the live tree is not a read-only act.
+    ap.add_argument("--extracted", type=Path, default=None,
+                    help="recordings root (default: EXTRACTED from birdnet.conf)")
     args = ap.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -262,8 +270,8 @@ def main() -> int:
         log.error("no database at %s", args.db)
         return 2
 
-    extracted = Path(conf_value("EXTRACTED",
-                                str(Path.home() / "BirdSongs" / "Extracted")))
+    extracted = args.extracted or Path(conf_value(
+        "EXTRACTED", str(Path.home() / "BirdSongs" / "Extracted")))
 
     db = sqlite3.connect(args.db, isolation_level=None, timeout=15)
     db.row_factory = sqlite3.Row

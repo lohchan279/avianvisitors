@@ -29,6 +29,13 @@ header('Cache-Control: public, max-age=30');
 // under PHP-FPM (BirdNET-Pi runs it as the caddy user), so it can't
 // be relied on.
 $DB_PATH = dirname(__DIR__, 2) . '/scripts/birds.db';
+// LOCAL: avian/scripts/preview.sh points a throwaway run at a copy of the
+// database. Only under the CLI and the built-in server - the station is
+// served by FPM, so a real request always reads the real file.
+if (in_array(PHP_SAPI, ['cli', 'cli-server'], true)) {
+    $previewDb = getenv('AV_DB_FILE');
+    if (is_string($previewDb) && $previewDb !== '') $DB_PATH = $previewDb;
+}
 $CONF_PATH = dirname(__DIR__, 2) . '/birdnet.conf';
 
 // SITE_NAME is already public on BirdNET-Pi's legacy homepage. Read only that

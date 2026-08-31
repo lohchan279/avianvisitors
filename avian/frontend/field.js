@@ -253,7 +253,9 @@
       var note = row.count + ' caught';
       // Two labels on one district would sit exactly on top of each
       // other, so the station's own district says both things at once.
-      if (isHome && station.species != null) note = station.species + ' species · ' + note;
+      // A station with no detections yet says nothing rather than
+      // "0 species", which reads as a fault.
+      if (isHome && station.species) note = station.species + ' species · ' + note;
       specs.push({
         area: row.area,
         name: isHome ? 'Home' : row.area,
@@ -274,7 +276,7 @@
         specs.push({
           area: homeArea,
           name: 'Home',
-          note: station.species != null ? station.species + ' species' : '',
+          note: station.species ? station.species + ' species' : '',
           rank: 1e6
         });
       }

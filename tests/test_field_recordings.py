@@ -85,6 +85,64 @@ class FieldRecordingTests(unittest.TestCase):
         self.assertIn("sci_name not in predicted", worker)
         self.assertIn("from utils.classes import birdnet_week", worker)
 
+    # ---- the preview harness ----------------------------------------
+    def test_preview_still_reads_both_real_lists(self):
+        # preview.sh derives its webroot and its API allowlist from the
+        # production scripts rather than restating them, which is the only
+        # reason a preview can catch a file missing from either. If the
+        # formatting of those scripts drifts, the extraction silently
+        # yields nothing and the preview quietly serves less than it
+        # should - so check the seams here rather than at 8am on the Pi.
+        manifest = subprocess.run(
+            ["bash", "-c",
+             "sed -n '/^  sources=(/,/^  )/p' scripts/link_webroot.sh"
+             " | sed -n 's/^ *\"\\(.*\\)\"$/\\1/p'"],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, check=True,
+        ).stdout.split()
+        self.assertGreater(len(manifest), 20, "the webroot manifest did not parse")
+        self.assertTrue(any(name.endswith("sg-map.js") for name in manifest))
+
+        allowlist = subprocess.run(
+            ["bash", "-c",
+             "sed -n 's#.*not path /avian/api/\\(.*\\)#\\1#p' scripts/update_caddyfile.sh"
+             " | head -1 | tr ' ' '\\n' | sed 's#^/avian/api/##' | grep '[.]php$'"],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, check=True,
+        ).stdout.split()
+        self.assertIn("submissions.php", allowlist)
+        self.assertNotIn("sg-areas.php", allowlist)
+        self.assertNotIn("places.php", allowlist)
+        self.assertNotIn("access-auth.php", allowlist)
+
+    def test_preview_overrides_cannot_reach_a_real_request(self):
+        # Every override the preview relies on is read behind a PHP_SAPI
+        # check. FPM serves the station and is neither of the SAPIs those
+        # checks admit, so none of these can move a path or open a gate on
+        # a request that matters. That is the whole reason letting a
+        # preview redirect the database and the admin gate is acceptable.
+        def guarded(source: str, pattern: str, label: str) -> None:
+            found = list(re.finditer(pattern, source))
+            self.assertTrue(found, f"{label} is gone")
+            for match in found:
+                window = source[max(0, match.start() - 260):match.end() + 260]
+                self.assertIn("PHP_SAPI", window, f"{label} is not gated on the SAPI")
+                self.assertNotIn("fpm", window, f"{label} would apply under FPM")
+
+        # submissions.php reads both of its overrides through one helper,
+        # so the helper is what has to carry the guard.
+        guarded(self.read("avian/api/submissions.php"),
+                r"(?s)function preview_path\(.*?\n\}", "preview_path()")
+        for name in ("AV_DB_FILE", "AV_BIRDNET_CONF"):
+            self.assertIn(f"preview_path('{name}'", self.read("avian/api/submissions.php"))
+
+        for relative, variable in (
+            ("avian/api/birdnet-api.php", "AV_DB_FILE"),
+            ("avian/api/access-auth.php", "AV_ACCESS_CONF"),
+            ("avian/api/access-auth.php", "AV_ACCESS_CERTS"),
+            ("avian/api/admin-auth.php", "AV_REQUIRE_AUTH"),
+        ):
+            guarded(self.read(relative), rf"getenv\('{variable}'\)",
+                    f"{variable} in {relative}")
+
     @unittest.skipUnless(shutil.which("php"), "PHP CLI is unavailable")
     def test_php_access_and_place_suite(self):
         result = subprocess.run(
