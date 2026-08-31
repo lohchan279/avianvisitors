@@ -226,17 +226,33 @@ case "$AS" in
     # root:caddy 0640 - the same group the real site runs as.
     state=${AV_ADMIN_STATE_FILE:-/var/lib/avian-visitors/admin-auth.state}
     if [ ! -r "$state" ]; then
-      cat >&2 <<WHY
---as password needs to read $state, which is root:caddy 0640 so that only
-the web server can see it. This shell is not in the caddy group, so every
-request would answer 401 no matter what password you typed.
-
-Run the preview with that group instead:
-
-    sg caddy -c '$0 $ORIGINAL_ARGS'
-
-Nothing is granted beyond reading the same file the real site reads.
-WHY
+      me=$(id -un)
+      {
+        if [ ! -e "$state" ]; then
+          echo "--as password needs the station's admin credential state:"
+          echo "  $state"
+          echo "It is not there at all. Set the admin password from SSH first:"
+          echo "    sudo /usr/local/sbin/avian-admin-control password-reset"
+          exit 77
+        fi
+        echo "--as password needs to read"
+        echo "  $state"
+        echo "which is root:caddy 0640 so that only the web server can see it."
+        echo "This shell cannot, so every request would answer 401 no matter"
+        echo "what password you typed."
+        echo
+        echo "Run the preview with that group. Either just for now:"
+        echo
+        echo "    sudo -u $me -g caddy $0 $ORIGINAL_ARGS"
+        echo
+        echo "or once and for all, after logging out and back in:"
+        echo
+        echo "    sudo usermod -aG caddy $me"
+        echo
+        echo "Nothing is granted beyond reading the file the real site reads."
+        echo "(sg caddy does not work here: it asks for a group password that"
+        echo "does not exist unless you are already a member.)"
+      } >&2
       exit 77
     fi
     unset AV_REQUIRE_AUTH

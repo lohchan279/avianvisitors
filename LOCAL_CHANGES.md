@@ -281,16 +281,23 @@ A preview can be published at **`https://ghlyms.com/preview/`** while the
 real site carries on at `/`:
 
 ```bash
-sg caddy -c './avian/scripts/preview.sh --expose --seed --db ~/BirdNET-Pi/scripts/birds.db'
+sudo -u "$(id -un)" -g caddy ./avian/scripts/preview.sh --expose --seed \\
+    --db ~/BirdNET-Pi/scripts/birds.db
 sudo ./avian/scripts/preview-expose.sh install 8080     # in another shell
 # ... look at it on your phone, unlock with the admin password ...
 sudo ./avian/scripts/preview-expose.sh remove
 ```
 
-`sg caddy` because the admin credential state is `root:caddy 0640`, so a
-preview run by an ordinary shell cannot read it and every request would
-401 whatever password was typed. The preview says so and prints the fixed
-command rather than serving a login form that never works.
+The group matters because the admin credential state is `root:caddy 0640`,
+so a preview run by an ordinary shell cannot read it and every request
+would 401 whatever password was typed. The preview checks up front and
+prints the exact command rather than serving a login form that never
+works. `sudo usermod -aG caddy "$(id -un)"` makes it permanent after a
+re-login.
+
+**Not `sg caddy`.** It asks for a group password that does not exist
+unless you are already a member of the group - which is exactly the case
+where you would not need it.
 
 A path on the existing host rather than a subdomain: no DNS record, no
 tunnel hostname, no second Access application. The site uses relative URLs

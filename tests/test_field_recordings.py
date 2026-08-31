@@ -170,7 +170,16 @@ class FieldRecordingTests(unittest.TestCase):
             timeout=120, check=False,
         )
         self.assertEqual(77, result.returncode, result.stdout)
-        self.assertIn("sg caddy", result.stdout)
+        self.assertIn("password-reset", result.stdout)
+
+        # The unreadable-but-present case needs a root:caddy file, which a
+        # test cannot portably make, so assert the remedy it prints. It has
+        # to be a command that works: sg(1) is not, because it asks for a
+        # group password that does not exist unless you are already a
+        # member - which is exactly when you would not need it.
+        preview = self.read("avian/scripts/preview.sh")
+        self.assertIn("sudo -u $me -g caddy", preview)
+        self.assertIn("sudo usermod -aG caddy $me", preview)
 
     def test_exposed_preview_moves_the_admin_session_cookie(self):
         # The session cookie is scoped to /avian/. Served under /preview/
