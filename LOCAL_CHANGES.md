@@ -284,7 +284,12 @@ So try it here instead:
 
 It builds a second webroot in a scratch directory, points the API at a
 copy of the database and a synthetic `birdnet.conf` whose `EXTRACTED`
-lives in that scratch directory, and serves the lot on `127.0.0.1:8080`.
+lives in that scratch directory, and serves the lot on `127.0.0.1:8080` —
+or the next free port above it, because a BirdNET-Pi usually has 8080
+already. The port is checked before anything is built; `php -S` only
+notices at the very end, which is a webroot and a seeded database thrown
+away over a number nobody chose. An explicit `--port` is refused rather
+than moved.
 Safe on the Pi itself: it writes nothing in the repository, the real
 webroot, the real recordings or the real database.
 

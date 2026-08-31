@@ -36,6 +36,7 @@ set -uo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ORIGINAL_ARGS="$*"
 PORT=8080
+PORT_GIVEN=0
 DB_SOURCE=""
 SEED=0
 KEEP=0
@@ -61,7 +62,7 @@ EXPOSE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --port)  PORT="${2:?--port needs a number}"; shift 2 ;;
+    --port)  PORT="${2:?--port needs a number}"; PORT_GIVEN=1; shift 2 ;;
     --db)    DB_SOURCE="${2:?--db needs a path}"; shift 2 ;;
     --seed)  SEED=1; shift ;;
     --keep)  KEEP=1; shift ;;
@@ -81,6 +82,43 @@ if [ "$EXPOSE" = 1 ] && [ "$AS_GIVEN" = 1 ] && [ "$AS" = admin ]; then
 fi
 
 command -v php >/dev/null || { echo "php is not installed" >&2; exit 1; }
+
+# ---- somewhere to listen ----------------------------------------------
+# Check before building anything. php -S only discovers a taken port at
+# the very end, after the webroot is linked and the database seeded, which
+# is a lot of work to throw away over a number nobody chose deliberately.
+port_free() {
+  php -r '$s = @stream_socket_server("tcp://127.0.0.1:" . $argv[1], $n, $m);
+          if ($s) { fclose($s); exit(0); } exit(1);' "$1" 2>/dev/null
+}
+
+# Best effort. ss only names the process for ports the caller owns, so
+# this is often blank - the port number is the useful part either way.
+port_holder() {
+  local who=''
+  command -v ss >/dev/null \
+    && who=$(ss -ltnp "sport = :$1" 2>/dev/null | awk 'NR > 1 { print $NF }' | head -1)
+  [ -n "$who" ] && printf '(%s) ' "$who"
+}
+
+if ! port_free "$PORT"; then
+  if [ "$PORT_GIVEN" = 1 ]; then
+    echo "port $PORT is already in use $(port_holder "$PORT")- pick another with --port" >&2
+    exit 1
+  fi
+  # Nobody asked for 8080 specifically - it is only the default, and on a
+  # BirdNET-Pi it is often already spoken for. Move along quietly.
+  taken=$PORT
+  found=0
+  for candidate in $(seq $((PORT + 1)) $((PORT + 20))); do
+    if port_free "$candidate"; then PORT=$candidate; found=1; break; fi
+  done
+  if [ "$found" = 0 ]; then
+    echo "ports $taken-$((taken + 20)) are all in use; pick one with --port" >&2
+    exit 1
+  fi
+  echo "port $taken is taken $(port_holder "$taken")- using $PORT instead"
+fi
 
 BASE="$(mktemp -d "${TMPDIR:-/tmp}/avian-preview-XXXXXX")"
 ROOT="$BASE/webroot"

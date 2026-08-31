@@ -144,6 +144,29 @@ class FieldRecordingTests(unittest.TestCase):
             guarded(self.read(relative), rf"getenv\('{variable}'\)",
                     f"{variable} in {relative}")
 
+    def test_preview_checks_the_port_before_doing_any_work(self):
+        # php -S only discovers a taken port at the very end, after the
+        # webroot is linked and the database seeded. On a BirdNET-Pi 8080
+        # is often already spoken for, so that was a lot of work thrown
+        # away over a number nobody chose.
+        preview = self.read("avian/scripts/preview.sh")
+        self.assertLess(preview.index("port_free"), preview.index("mktemp -d"),
+                        "the port check runs after the scratch directory is built")
+
+        # An explicitly chosen port is refused rather than silently moved.
+        import socket
+        with socket.socket() as taken:
+            taken.bind(("127.0.0.1", 0))
+            taken.listen(1)
+            port = taken.getsockname()[1]
+            result = subprocess.run(
+                ["bash", "avian/scripts/preview.sh", "--port", str(port)],
+                cwd=ROOT, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, timeout=120, check=False,
+            )
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("already in use", result.stdout)
+
     # ---- publishing the preview at a sublink -------------------------
     def test_expose_refuses_the_mode_that_opens_the_admin_gate(self):
         # --as admin turns the password gate off, which is free on
