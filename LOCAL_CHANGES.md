@@ -63,6 +63,7 @@ upstream file.
 | `avian/frontend/sg-map.js` | GENERATED. Singapore's 55 planning areas, ~50 KB. Lazy-loaded by `field.js` on first sight of the Map view, so a visit that never opens it pays nothing |
 | `avian/scripts/build_sg_map.py` | rebuilds both of the above from one geoBoundaries download |
 | `avian/scripts/preview.sh`, `preview-router.php`, `preview-seed.php` | run the whole site against throwaway data — see below |
+| `avian/scripts/preview-expose.sh` | publish a running preview at `ghlyms.com/preview/` and take it down again |
 | `avian/frontend/field.js`, `field.css` | the Map view: the district map, the recorder and the list of what has been caught. Self-mounting into an empty `#v3`, so the feature costs `apt.js` two lines and nothing else |
 | `scripts/submission_worker.py` | scores submitted clips with the station's own model |
 | `tests/test_field_recordings.py`, `tests/test_field_access_auth.php` | the view wiring, the coordinate promise, and every JWT forgery worth naming |
@@ -272,6 +273,45 @@ real worker without risk, give it copies of both things it writes to:
 ~/BirdNET-Pi/birdnet/bin/python3 scripts/submission_worker.py \
     --once --db /tmp/copy.db --extracted /tmp/preview-recordings
 ```
+
+### Seeing it on ghlyms.com
+
+A preview can be published at **`https://ghlyms.com/preview/`** while the
+real site carries on at `/`:
+
+```bash
+./avian/scripts/preview.sh --expose --seed --db ~/BirdNET-Pi/scripts/birds.db
+sudo ./avian/scripts/preview-expose.sh install 8080     # in another shell
+# ... look at it on your phone ...
+sudo ./avian/scripts/preview-expose.sh remove
+```
+
+A path on the existing host rather than a subdomain: no DNS record, no
+tunnel hostname, no second Access application. The site uses relative URLs
+throughout, so it runs under a prefix unchanged — verified end to end, map
+data and audio included.
+
+`--expose` is a separate mode because exposure is a different risk from
+localhost. On `127.0.0.1`, `--as admin` turning the password gate off costs
+nothing — anyone who can reach it already has a shell. Behind the tunnel it
+would cost a great deal, because **only `birds.db` and `birdnet.conf` are
+redirected**: `config.php` still writes the real station config,
+`generate.php` still spawns real work. So `--expose`:
+
+- refuses `--as admin` outright, and fails before building anything;
+- keeps the admin password gate **on**, and uses the station's real
+  `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` so a genuine assertion from the edge
+  verifies;
+- narrows the API to the endpoints that cannot mutate. Everything else is
+  not merely refused but **absent** — `config.php`, `maintenance.php`,
+  `generate.php`, `export.php`, `birdnet-status.php` and `birdweather.php`
+  all return 404.
+
+`preview-expose.sh` appends a delimited block to the site overlay rather
+than rewriting it, because that file already carries the `/stream` route
+keeping live audio alive on the public host. It backs the overlay up,
+validates the config before reloading, and rolls back if validation fails.
+A test asserts the add/remove round trip is byte-identical.
 
 ### Preview overrides
 

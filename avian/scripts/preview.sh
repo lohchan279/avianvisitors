@@ -21,6 +21,8 @@
 #   ./avian/scripts/preview.sh --as access      # arrive as a Cloudflare
 #                                               # Access visitor, no admin
 #                                               # password, real signature
+#   ./avian/scripts/preview.sh --expose         # behind ghlyms.com/preview/
+#                                               # via avian/scripts/preview-expose.sh
 #
 # Safe to run on the Pi itself. It never writes inside the repository, the
 # real webroot, the real recordings or the real database - the copy is
@@ -43,6 +45,11 @@ KEEP=0
 #          answers "can the people on my Access policy record without
 #          being given the admin password".
 AS=admin
+AS_GIVEN=0
+# Exposing the preview through the tunnel is a different risk from running
+# it on localhost, so it is a different mode rather than a flag on the
+# existing ones. See the block below for what it hardens.
+EXPOSE=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -50,11 +57,20 @@ while [ "$#" -gt 0 ]; do
     --db)    DB_SOURCE="${2:?--db needs a path}"; shift 2 ;;
     --seed)  SEED=1; shift ;;
     --keep)  KEEP=1; shift ;;
-    --as)    AS="${2:?--as needs admin or access}"; shift 2 ;;
+    --as)    AS="${2:?--as needs admin or access}"; AS_GIVEN=1; shift 2 ;;
+    --expose) EXPOSE=1; shift ;;
     -h|--help) sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
 done
+
+if [ "$EXPOSE" = 1 ] && [ "$AS_GIVEN" = 1 ] && [ "$AS" = admin ]; then
+  echo "--expose will not run with --as admin: that turns the password" >&2
+  echo "gate off, and the mutating endpoints act on the real station." >&2
+  echo "Use --expose on its own; the gate stays on and Cloudflare Access" >&2
+  echo "identifies the visitor." >&2
+  exit 64
+fi
 
 command -v php >/dev/null || { echo "php is not installed" >&2; exit 1; }
 
@@ -145,6 +161,18 @@ EXTRACTED="$ROOT"
 FIELD_MIN_CONFIDENCE=0.5
 EOF
 
+# ---- reachable from the internet? -------------------------------------
+# On localhost, --as admin turning the password gate off costs nothing:
+# anyone who can reach 127.0.0.1 already has a shell. Behind the tunnel it
+# would cost a great deal, because only birds.db and birdnet.conf are
+# redirected for this feature - config.php still writes the *real* station
+# config, generate.php still spawns real work. So --expose refuses that
+# mode outright and narrows the API surface to the endpoints the site
+# needs to render, which are the read-only ones.
+if [ "$EXPOSE" = 1 ]; then
+  AS=expose
+fi
+
 # ---- who the preview arrives as ---------------------------------------
 case "$AS" in
   admin)
@@ -170,6 +198,37 @@ case "$AS" in
     unset AV_REQUIRE_AUTH
     WHO="a Cloudflare Access visitor, $AV_PREVIEW_ACCESS_EMAIL (no admin password)"
     ;;
+  expose)
+    # The real team and audience, so a real assertion from the real edge
+    # verifies. Nothing else is borrowed from the live config.
+    team=$(sed -n 's/^[[:space:]]*ACCESS_TEAM_DOMAIN[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$REAL_CONF" 2>/dev/null | head -1)
+    aud=$(sed -n 's/^[[:space:]]*ACCESS_AUD[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$REAL_CONF" 2>/dev/null | head -1)
+    if [ -z "$team" ] || [ -z "$aud" ]; then
+      cat >&2 <<'WHY'
+--expose needs Cloudflare Access configured, or every request arrives
+anonymous and the whole preview answers 401.
+
+Add these two lines to /etc/birdnet/birdnet.conf first:
+
+    ACCESS_TEAM_DOMAIN="yourteam.cloudflareaccess.com"
+    ACCESS_AUD="<Application Audience tag from the Access app>"
+
+Adding them is safe on its own: nothing running today reads either key.
+WHY
+      exit 78
+    fi
+    printf 'ACCESS_TEAM_DOMAIN="%s"\nACCESS_AUD="%s"\n' "$team" "$aud" >>"$BASE/birdnet.conf"
+
+    # Belt and braces. Every mutating endpoint already guards itself with
+    # the admin password, and the gate is on - but a preview reachable
+    # from the internet should not even offer them a door to knock on.
+    grep -E '^(birdnet-api|submissions|wiki|recording|spectrogram|cutout|menu)\.php$' \
+      "$BASE/api-allowlist" >"$BASE/api-allowlist.narrow"
+    mv "$BASE/api-allowlist.narrow" "$BASE/api-allowlist"
+
+    unset AV_REQUIRE_AUTH
+    WHO="whoever Cloudflare Access lets through to $team"
+    ;;
   *) echo "--as takes admin or access" >&2; exit 64 ;;
 esac
 
@@ -187,6 +246,12 @@ export PHP_CLI_SERVER_WORKERS=4
 
 echo "preview   http://127.0.0.1:$PORT"
 echo "arriving as $WHO"
+if [ "$EXPOSE" = 1 ]; then
+  echo "admin gate ON; API narrowed to: $(tr '\n' ' ' <"$BASE/api-allowlist")"
+  echo
+  echo "publish it with:  sudo $REPO/avian/scripts/preview-expose.sh install $PORT"
+  echo "take it down:     sudo $REPO/avian/scripts/preview-expose.sh remove"
+fi
 echo "database  $DB  (a copy; the station's own is untouched)"
 echo "recordings and uploads land in $ROOT"
 echo "ctrl-c to stop"

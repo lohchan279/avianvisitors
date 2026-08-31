@@ -143,6 +143,72 @@ class FieldRecordingTests(unittest.TestCase):
             guarded(self.read(relative), rf"getenv\('{variable}'\)",
                     f"{variable} in {relative}")
 
+    # ---- publishing the preview at a sublink -------------------------
+    def test_expose_refuses_the_mode_that_opens_the_admin_gate(self):
+        # --as admin turns the password gate off, which is free on
+        # localhost and expensive behind the tunnel: only birds.db and
+        # birdnet.conf are redirected, so config.php would still write the
+        # real station config. The refusal has to come before any work.
+        result = subprocess.run(
+            ["bash", "avian/scripts/preview.sh", "--expose", "--as", "admin"],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=60, check=False,
+        )
+        self.assertEqual(64, result.returncode, result.stdout)
+        self.assertIn("will not run with --as admin", result.stdout)
+
+    def test_expose_narrows_the_api_to_endpoints_that_cannot_mutate(self):
+        preview = self.read("avian/scripts/preview.sh")
+        narrow = re.search(r"grep -E '\^\(([^)]*)\)\\\.php\$'", preview)
+        self.assertIsNotNone(narrow, "the --expose allowlist filter is gone")
+        allowed = set(narrow.group(1).split("|"))
+        # Everything that writes to the station, spawns work, or reports
+        # its configuration stays out.
+        for endpoint in ("config", "maintenance", "generate", "export",
+                         "birdweather", "birdnet-status", "archive"):
+            self.assertNotIn(endpoint, allowed, f"{endpoint}.php is exposed")
+        self.assertIn("submissions", allowed)
+        self.assertIn("birdnet-api", allowed)
+
+    def test_expose_overlay_round_trip_preserves_everything_else(self):
+        # The overlay already carries the /stream route that keeps live
+        # audio working on the public host. Adding and removing a preview
+        # block must leave it byte-identical - losing that route is a
+        # silent regression nobody would connect to a preview.
+        import tempfile
+        begin = "# >>> avian preview (temporary)"
+        end = "# <<< avian preview"
+        original = (
+            "# Local Caddy overlay.\n"
+            "@accessStream {\n\tpath /stream\n"
+            "\theader Cf-Access-Jwt-Assertion *\n}\n"
+            "handle @accessStream {\n\treverse_proxy localhost:8000\n}\n"
+        )
+        strip = ("awk -v b='%s' -v e='%s' "
+                 "'index($0,b){skip=1} !skip{print} index($0,e){skip=0}'" % (begin, end))
+        with tempfile.TemporaryDirectory() as tmp:
+            source = pathlib.Path(tmp) / "overlay.caddy"
+            source.write_text(original, encoding="utf-8")
+            installed = subprocess.run(
+                ["bash", "-c", f"{strip} {source}"],
+                text=True, stdout=subprocess.PIPE, check=True,
+            ).stdout + "\n".join([
+                begin,
+                "handle_path /preview/* {",
+                "\treverse_proxy 127.0.0.1:8080",
+                "}",
+                end,
+                "",
+            ])
+            self.assertIn("reverse_proxy localhost:8000", installed)
+
+            (pathlib.Path(tmp) / "installed.caddy").write_text(installed, encoding="utf-8")
+            removed = subprocess.run(
+                ["bash", "-c", f"{strip} {pathlib.Path(tmp) / 'installed.caddy'}"],
+                text=True, stdout=subprocess.PIPE, check=True,
+            ).stdout
+            self.assertEqual(original, removed, "removing the block changed the overlay")
+
     @unittest.skipUnless(shutil.which("php"), "PHP CLI is unavailable")
     def test_php_access_and_place_suite(self):
         result = subprocess.run(
