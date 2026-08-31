@@ -56,9 +56,15 @@ upstream file.
 | `scripts/noise_profile.sh` | diagnose what the background noise actually is |
 | `scripts/filter_audition.sh` | compare audio filters by ear on one recording |
 | `scripts/filter_test.sh`, `scripts/score_file.py` | A/B filters against the real model |
-| `avian/api/submissions.php` | field recordings: submit, poll, confirm, reject, list |
-| `avian/frontend/field.js`, `field.css` | the field-recording UI. Self-mounting: injects its own button and panel and asks `apt.js` for nothing, so the feature adds no conflict surface to the file upstream rewrites most |
+| `avian/api/submissions.php` | field recordings: submit, poll, audio, reject, list |
+| `avian/api/places.php` | turns a coordinate into a planning-area name. The one place a fix becomes a name; nothing downstream sees the fix |
+| `avian/api/access-auth.php` | verifies the Cloudflare Access JWT (RS256, audience, issuer, expiry) so a whitelisted visitor can record without the admin password |
+| `avian/api/sg-areas.php` | GENERATED. The same boundaries as `sg-map.js`, for naming a fix server-side. Deliberately **not** in the Caddy allowlist, so it is never reachable as a URL |
+| `avian/frontend/sg-map.js` | GENERATED. Singapore's 55 planning areas, ~50 KB. Lazy-loaded by `field.js` on first sight of the Map view, so a visit that never opens it pays nothing |
+| `avian/scripts/build_sg_map.py` | rebuilds both of the above from one geoBoundaries download |
+| `avian/frontend/field.js`, `field.css` | the Map view: the district map, the recorder and the list of what has been caught. Self-mounting into an empty `#v3`, so the feature costs `apt.js` two lines and nothing else |
 | `scripts/submission_worker.py` | scores submitted clips with the station's own model |
+| `tests/test_field_recordings.py`, `tests/test_field_access_auth.php` | the view wiring, the coordinate promise, and every JWT forgery worth naming |
 | `scripts/install_submission_worker.sh` | installs the worker as a service |
 | `frame/serve_frame.py` | serve the collage to a networked e-paper panel |
 | `.gitattributes` | stop generated mask tables conflicting |
@@ -91,7 +97,7 @@ landing if a merge ever mangles something.
 
 ## The conflict surface
 
-Seven modified lines in `apt.js`. All are structurally stable — none needs
+Nine modified lines in `apt.js`. All are structurally stable — none needs
 editing during normal use, so they only conflict if upstream edits the
 same line.
 
@@ -103,6 +109,8 @@ same line.
 | live audio host test gains the allowlist check | keep ours |
 | `lan_policy` forcing live audio off is skipped for hosts in `liveAudioHosts` | keep ours — without it the stream dies on ghlyms.com, since the tunnel sets `AVIAN_FORCE_AUTH` and `menu.php` then reports `lan_policy: true` |
 | settings `.seg` selector gains `:not([data-atlas-seg])` | keep ours — without it the atlas toggle is claimed as a Pi config field and goes inert |
+| `VIEW_TITLES` gains a fourth entry, `'On the Map'` | keep ours, re-adding any title upstream added |
+| `go()` clamps to `VIEW_TITLES.length - 1` instead of `2` | keep ours — with upstream's literal `2` the map tab is unreachable and the slide stops at the atlas |
 
 Plus insertions, which merge cleanly unless upstream edits the same
 region: `ASSET_VERSION` and `localCfg()`.
@@ -130,13 +138,14 @@ upstream's implementation.
 | `avian/scripts/pregen.py` | bare scientific-name label files, standalone eBird-region mode, NVIDIA backend (+278/-46 — the largest local change to an upstream file) |
 | `.gitignore` | `birdnet.conf.save`, `*.whl`, `batch_requests.jsonl` |
 | `scripts/update_caddyfile.sh` | publishes `/avian/api/submissions.php` — the API path is an allowlist, and an unlisted endpoint gets `respond 404` |
+| `avian/frontend/index.html` | a fourth `<section class="view" id="v3">` (left empty; `field.js` fills it) and a fourth slider button |
 
 ---
 
 ## Upstream tests that fail here by design
 
-`python3 -m pytest tests/ --ignore=tests/test_analysis.py` gives **69 passed,
-4 failed** on this fork. All six of these pass on a clean upstream checkout,
+`python3 -m pytest tests/ --ignore=tests/test_analysis.py` gives **78 passed,
+4 failed** on this fork. All four of these pass on a clean upstream checkout,
 so they are fork properties, not regressions. Two causes:
 
 **The illustration library is re-encoded.** `optimize_illustrations.py` shrank
@@ -205,4 +214,62 @@ comments.
   Local additions: `LIVESTREAM_FILTER`, `EXTRACTION_FILTER`.
 - `~/BirdNET-Pi/whitelist_species_list.txt` — species allowed past the
   occurrence-frequency filter (Rose-ringed Parakeet: established in
-  Singapore, but BirdNET's model underrates introduced populations).
+  Singapore, but BirdNET's model underrates introduced populations). The
+  field-recording worker reads the same file, so a submission cannot
+  offer a species the station itself would have refused.
+
+---
+
+## The Map view
+
+A fourth sheet beside Collage, Stats and Atlas. Three things live there:
+a district map of Singapore shaded by how many birds have been caught in
+each, a recorder, and the list of catches with their audio.
+
+**Coordinates go in and never come out.** The station stores the fix
+because the model needs it — the occurrence filter judges a clip by where
+it was heard — but `submit` resolves it to a planning-area name once, on
+the way in, and every response afterwards speaks in names. A recording
+made at the station is called "Home" rather than its address; the map
+still shades the station's district, because a blob has to go somewhere
+and a district is not a street.
+
+**Nobody picks the bird.** The person holding the phone almost never
+knows which of five Latin names it was, so asking turns a guess into a
+recorded fact. The worker's top score has to clear
+`FIELD_MIN_CONFIDENCE` (default 0.5) on its own; below that the clip is
+marked `unsure`, the audio is deleted, and the site says it could not
+make that one out.
+
+**Who may record.** Anyone Cloudflare Access has already let through —
+`avian/api/access-auth.php` verifies the signed JWT properly (RS256
+against the team's published certificates, plus audience, issuer and
+expiry) rather than trusting a header. Failing that, the station's
+ordinary admin rules apply, so nothing gets easier when Access is not in
+play. Needs two settings in `birdnet.conf`:
+
+```
+ACCESS_TEAM_DOMAIN="yourteam.cloudflareaccess.com"
+ACCESS_AUD="<Application Audience tag from the Access app>"
+```
+
+With either missing, Access auth is simply off.
+
+**Rebuilding the map** after a boundary revision:
+
+```bash
+base=https://media.githubusercontent.com/media/wmgeolab/geoBoundaries
+curl -sSL -o /tmp/sg-adm2.geojson \
+  $base/main/releaseData/gbOpen/SGP/ADM2/geoBoundaries-SGP-ADM2.geojson
+python3 avian/scripts/build_sg_map.py /tmp/sg-adm2.geojson
+./avian/scripts/bump_version.sh
+```
+
+The `raw.githubusercontent.com` URL returns a Git LFS pointer, not the
+data — only the media host gives the real file.
+
+**This view assumes Singapore.** The boundaries are Singapore's planning
+areas, so a station elsewhere gets a map of the wrong country and
+`avian_area_at()` returning null for every fix. Moving stations means
+regenerating from that country's ADM2 and re-cropping `VIEW` in
+`field.js`.
