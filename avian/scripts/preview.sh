@@ -23,6 +23,9 @@
 #                                               # password, real signature
 #   ./avian/scripts/preview.sh --expose         # behind ghlyms.com/preview/
 #                                               # via avian/scripts/preview-expose.sh
+#   ./avian/scripts/preview.sh --expose --background
+#                                               # detach, so the shell stays
+#                                               # yours. --stop ends it.
 #
 # Safe to run on the Pi itself. It never writes inside the repository, the
 # real webroot, the real recordings or the real database - the copy is
@@ -35,6 +38,11 @@ set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ORIGINAL_ARGS="$*"
+ORIGINAL_ARGV=("$@")
+# Where a backgrounded preview records its pid and its output, so --stop
+# can find it and a failure after detaching is not simply lost.
+PIDFILE="${TMPDIR:-/tmp}/avian-preview.pid"
+LOGFILE="${TMPDIR:-/tmp}/avian-preview.log"
 PORT=8080
 PORT_GIVEN=0
 DB_SOURCE=""
@@ -65,6 +73,11 @@ AS_GIVEN=0
 # it on localhost, so it is a different mode rather than a flag on the
 # existing ones. See the block below for what it hardens.
 EXPOSE=0
+# Foreground is the wrong default for something you publish and then walk
+# around with: the shell it runs in is the same shell you need for the
+# install command, and typing into it kills the preview.
+BACKGROUND=0
+STOP=0
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -74,10 +87,31 @@ while [ "$#" -gt 0 ]; do
     --keep)  KEEP=1; shift ;;
     --as)    AS="${2:?--as needs admin, password, access or open}"; AS_GIVEN=1; shift 2 ;;
     --expose) EXPOSE=1; shift ;;
+    --background|-b) BACKGROUND=1; shift ;;
+    --stop)  STOP=1; shift ;;
     -h|--help) sed -n '2,/^set -/p' "${BASH_SOURCE[0]}" | sed '$d;s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
 done
+
+if [ "$STOP" = 1 ]; then
+  stopped=0
+  if [ -r "$PIDFILE" ]; then
+    pid=$(cat "$PIDFILE")
+    # The whole process group, not just the pid. setsid made the child a
+    # group leader and php -S forks workers of its own, so killing the one
+    # process leaves the port held and the next start refusing it.
+    if kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null; then
+      echo "stopped the background preview (pid $pid)"
+      stopped=1
+    fi
+  fi
+  [ "$stopped" = 1 ] || echo "no background preview was running"
+  rm -f "$PIDFILE"
+  echo "the published route is separate; take it down with:"
+  echo "  sudo $REPO/avian/scripts/preview-expose.sh remove"
+  exit 0
+fi
 
 if [ "$EXPOSE" = 1 ] && [ "$AS_GIVEN" = 1 ] && [ "$AS" = admin ]; then
   echo "--expose will not run with --as admin: that turns the password" >&2
@@ -124,6 +158,38 @@ if ! port_free "$PORT"; then
     exit 1
   fi
   echo "port $taken is taken $(port_holder "$taken")- using $PORT instead"
+fi
+
+# ---- detach, if asked -------------------------------------------------
+# The port is already settled, so the parent can tell you where to point
+# preview-expose.sh without waiting for the child to say so.
+if [ "$BACKGROUND" = 1 ] && [ -z "${AV_PREVIEW_CHILD:-}" ]; then
+  if [ -r "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    echo "a background preview is already running (pid $(cat "$PIDFILE"))" >&2
+    echo "stop it first:  $0 --stop" >&2
+    exit 1
+  fi
+  child=()
+  for arg in "${ORIGINAL_ARGV[@]}"; do
+    case "$arg" in --background|-b) ;; *) child+=("$arg") ;; esac
+  done
+  # --port last wins in the loop above, so appending settles it.
+  AV_PREVIEW_CHILD=1 setsid nohup "$0" "${child[@]}" --port "$PORT" \
+    >"$LOGFILE" 2>&1 &
+  echo $! >"$PIDFILE"
+  sleep 2
+  if ! kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+    echo "the preview did not start; its output:" >&2
+    sed 's/^/  /' "$LOGFILE" >&2
+    rm -f "$PIDFILE"
+    exit 1
+  fi
+  echo "preview running in the background on http://127.0.0.1:$PORT"
+  echo "  output   $LOGFILE"
+  echo "  stop     $0 --stop"
+  echo
+  echo "publish it with:  sudo $REPO/avian/scripts/preview-expose.sh install $PORT"
+  exit 0
 fi
 
 BASE="$(mktemp -d "${TMPDIR:-/tmp}/avian-preview-XXXXXX")"

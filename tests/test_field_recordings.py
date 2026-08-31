@@ -195,6 +195,54 @@ class FieldRecordingTests(unittest.TestCase):
         # And an empty field list has to point at where the birds are.
         self.assertIn("what the station has heard at home", field)
 
+    def test_a_backgrounded_preview_survives_the_shell_and_stops_cleanly(self):
+        # Foreground was the wrong default for something you publish and
+        # then walk around with: the shell it runs in is the same shell you
+        # need for the install command, and typing into it kills it.
+        import socket
+        import time
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+
+        script = str(ROOT / "avian/scripts/preview.sh")
+        started = subprocess.run(
+            ["bash", script, "--background", "--port", str(port)],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, timeout=120, check=False,
+        )
+        try:
+            self.assertEqual(0, started.returncode, started.stdout)
+            self.assertIn("running in the background", started.stdout)
+
+            # The parent has exited; the preview must still be answering.
+            deadline = time.time() + 20
+            alive = False
+            while time.time() < deadline and not alive:
+                with socket.socket() as check:
+                    check.settimeout(1)
+                    alive = check.connect_ex(("127.0.0.1", port)) == 0
+                if not alive:
+                    time.sleep(0.5)
+            self.assertTrue(alive, "the detached preview is not listening")
+        finally:
+            subprocess.run(["bash", script, "--stop"], cwd=ROOT,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=60, check=False)
+
+        # --stop has to take the whole process group: setsid makes the
+        # child a group leader and php -S forks workers, so killing one
+        # process leaves the port held.
+        deadline = time.time() + 20
+        while time.time() < deadline:
+            with socket.socket() as check:
+                check.settimeout(1)
+                if check.connect_ex(("127.0.0.1", port)) != 0:
+                    break
+            time.sleep(0.5)
+        else:
+            self.fail("the port is still held after --stop")
+
     # ---- publishing the preview at a sublink -------------------------
     def test_expose_refuses_the_mode_that_opens_the_admin_gate(self):
         # --as admin turns the password gate off, which is free on
