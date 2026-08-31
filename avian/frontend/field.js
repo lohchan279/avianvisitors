@@ -1,32 +1,67 @@
-/* Field recordings - record a bird wherever you are, let the station name it.
+/* The Map view - where birds have been caught, and how to catch one.
  *
- * Self-mounting on purpose: this file injects its own button, panel and
- * list, and asks apt.js for nothing. apt.js is the file upstream rewrites
- * most, so every line this feature does not add there is a merge conflict
- * it cannot cause.
+ * Self-mounting on purpose: this file fills the fourth view sheet and
+ * asks apt.js for nothing beyond the empty section to live in. apt.js is
+ * the file upstream rewrites most, so every line this feature does not
+ * add there is a merge conflict it cannot cause. The whole cost in that
+ * file is two lines: a view title and a clamp.
  *
- * The flow is deliberately record -> analyse -> CONFIRM -> keep. The
- * station offers candidates and a person picks; nothing reaches the site
- * on the model's word alone. That is what keeps guesses out of the
- * collage, and it gates the expensive side effects, since only a
- * confirmed species should ever trigger an illustration.
+ * Three things happen here.
+ *
+ * A map. Singapore's 55 planning areas, shaded by how many birds have
+ * been caught in each. Areas rather than pins because the station only
+ * ever learns a name - avian/api/places.php turns the fix into a place on
+ * the way in and the coordinate never comes back out - and because a
+ * neighbourhood is the honest resolution for a phone recording anyway.
+ *
+ * A recorder. Record a few seconds wherever you are and the station's own
+ * BirdNET names it. It does not ask which of five candidates it was: the
+ * person holding the phone almost never knows, and asking turns a guess
+ * into a recorded fact. The model either clears the bar on its own or the
+ * station says it could not make that one out.
+ *
+ * A list. What has been caught, newest first, with the audio - so a
+ * morning's walk can be found again in the evening.
  *
  * Recording needs a secure context, so on http://ghlyms.local the button
- * explains itself rather than failing when pressed. The list works
- * everywhere.
+ * explains itself rather than failing when pressed. The map and the list
+ * work everywhere.
  */
 (function () {
   'use strict';
+
+  // Captured at load: document.currentScript is only meaningful while the
+  // script is executing, and everything below runs later.
+  var OWN_SRC = (document.currentScript && document.currentScript.src) || '';
 
   var API = './avian/api/submissions.php';
   var MAX_SECONDS = 15;      // BirdNET works in 3s windows; 15 gives it five
   var POLL_MS = 1500;
   var POLL_LIMIT = 60;       // ~90s before we stop waiting on the worker
 
+  /* The drawing window, not the data's own extent. The generated bbox
+   * reaches down to the industrial specks off Semakau, which is a third
+   * of the height for water nobody records in. This crop keeps every
+   * inhabited island and loses the empty sea. */
+  var VIEW = { lon0: 103.598, lon1: 104.095, lat0: 1.180, lat1: 1.478 };
+  var MAP_W = 1000;
+
+  /* Heat steps. Discrete rather than continuous so the legend can say
+   * what each shade means - a smooth ramp looks better and tells you
+   * less. */
+  var HEAT_STOPS = [1, 2, 4, 8, 16];
+  var HEAT_OPACITY = [0.18, 0.34, 0.52, 0.72, 0.92];
+
   function el(tag, cls, text) {
     var n = document.createElement(tag);
     if (cls) n.className = cls;
     if (text != null) n.textContent = text;
+    return n;
+  }
+
+  function svgEl(tag, cls) {
+    var n = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    if (cls) n.setAttribute('class', cls);
     return n;
   }
 
@@ -80,52 +115,381 @@
     });
   }
 
-  // ---------------------------------------------------------------- UI
-  var panel, body, fab, mediaRecorder, chunks = [], stopTimer, tickTimer, stream;
+  // --------------------------------------------------------------- state
+  var view, mapHost, mapSvg, mapLabels, legendEl, listEl, countEl, emptyEl;
+  var sheet, sheetBody;
+  var areaPaths = {};        // area name -> the land path drawing it
+  var areaAt = {};           // area name -> [x, y] in viewBox units
+  var selected = null;
+  var catches = [];
+  var mediaRecorder, chunks = [], stopTimer, tickTimer, stream;
 
-  function open() {
-    panel.hidden = false;
-    document.body.classList.add('field-open');
+  // ----------------------------------------------------------- the shape
+  /* The boundary data is 50 KB and most visits never open this view, so
+   * it is fetched on first sight rather than shipped with the page. The
+   * cache token rides along from our own script tag, which is how the
+   * rest of the frontend versions its assets. */
+  var mapLoading = null;
+  function loadShape() {
+    if (window.AVIAN_SG_MAP) return Promise.resolve(window.AVIAN_SG_MAP);
+    if (mapLoading) return mapLoading;
+    mapLoading = new Promise(function (resolve, reject) {
+      var version = /[?&]v=([^&]*)/.exec(OWN_SRC);
+      var tag = document.createElement('script');
+      tag.src = './sg-map.js' + (version ? '?v=' + version[1] : '');
+      tag.onload = function () {
+        window.AVIAN_SG_MAP ? resolve(window.AVIAN_SG_MAP)
+                            : reject(new Error('the map data did not load'));
+      };
+      tag.onerror = function () { reject(new Error('the map data did not load')); };
+      document.head.appendChild(tag);
+    });
+    return mapLoading;
+  }
+
+  function projector() {
+    // Equirectangular. Over a city the cosine term is a rounding error,
+    // but leaving it out is the kind of shortcut that is wrong somewhere
+    // else later.
+    var cos = Math.cos((VIEW.lat0 + VIEW.lat1) / 2 * Math.PI / 180);
+    var k = MAP_W / ((VIEW.lon1 - VIEW.lon0) * cos);
+    var height = (VIEW.lat1 - VIEW.lat0) * k;
+    return {
+      height: height,
+      at: function (lon, lat) {
+        return [(lon - VIEW.lon0) * cos * k, (VIEW.lat1 - lat) * k];
+      }
+    };
+  }
+
+  function ringPath(ring, project) {
+    var out = '';
+    for (var i = 0; i < ring.length; i += 2) {
+      var p = project.at(ring[i], ring[i + 1]);
+      out += (i ? ' ' : 'M') + p[0].toFixed(1) + ',' + p[1].toFixed(1);
+    }
+    return out + 'Z';
+  }
+
+  function drawShape(shape) {
+    var project = projector();
+    mapSvg.setAttribute('viewBox', '0 0 ' + MAP_W + ' ' + Math.round(project.height));
+
+    var land = svgEl('g', 'field-land');
+    var borders = '';
+    areaPaths = {};
+    areaAt = {};
+
+    shape.areas.forEach(function (area) {
+      var d = '';
+      area.rings.forEach(function (ring) { d += ringPath(ring, project); });
+      var path = svgEl('path', 'field-area');
+      path.setAttribute('d', d);
+      path.setAttribute('data-area', area.name);
+      // Every area is a target, so tapping the sea deselects and tapping
+      // a quiet district still tells you it is quiet.
+      path.addEventListener('click', function () { select(area.name); });
+      land.appendChild(path);
+      borders += d;
+      areaPaths[area.name] = path;
+      areaAt[area.name] = project.at(area.at[0], area.at[1]);
+    });
+
+    var edge = svgEl('path', 'field-borders');
+    edge.setAttribute('d', borders);
+
+    mapSvg.textContent = '';
+    mapSvg.appendChild(land);
+    mapSvg.appendChild(svgEl('g', 'field-heat'));
+    mapSvg.appendChild(edge);
+    mapSvg.appendChild(svgEl('g', 'field-marks'));
+  }
+
+  function heatLevel(count) {
+    var level = 0;
+    for (var i = 0; i < HEAT_STOPS.length; i++) if (count >= HEAT_STOPS[i]) level = i + 1;
+    return level;
+  }
+
+  /* Shading is a second path over the land rather than a different fill
+   * on it: fill-opacity works in every browser that can draw an SVG,
+   * where mixing two custom properties into one colour does not. */
+  function paintHeat(areas, station) {
+    var heat = mapSvg.querySelector('.field-heat');
+    var marks = mapSvg.querySelector('.field-marks');
+    if (!heat || !marks) return;
+    heat.textContent = '';
+    marks.textContent = '';
+    mapLabels.textContent = '';
+
+    var homeArea = station && station.area && areaAt[station.area] ? station.area : null;
+    var specs = [];
+
+    areas.forEach(function (row) {
+      var base = areaPaths[row.area];
+      if (!base || !row.count) return;
+      var wash = svgEl('path', 'field-wash');
+      wash.setAttribute('d', base.getAttribute('d'));
+      wash.setAttribute('fill-opacity', String(HEAT_OPACITY[heatLevel(row.count) - 1]));
+      heat.appendChild(wash);
+
+      // Sentosa and the offshore islands are a few pixels across, so the
+      // shading alone is invisible at exactly the districts most likely
+      // to be worth a trip. Give a small area a dot as well.
+      try {
+        var span = wash.getBBox();
+        if (Math.max(span.width, span.height) < 16) {
+          var dot = svgEl('circle', 'field-wash field-dot');
+          dot.setAttribute('cx', String(areaAt[row.area][0]));
+          dot.setAttribute('cy', String(areaAt[row.area][1]));
+          dot.setAttribute('r', '6');
+          dot.setAttribute('fill-opacity',
+            String(HEAT_OPACITY[heatLevel(row.count) - 1]));
+          heat.appendChild(dot);
+        }
+      } catch (e) { /* getBBox throws on a detached SVG; the dot is a nicety */ }
+
+      var isHome = row.area === homeArea;
+      var note = row.count + ' caught';
+      // Two labels on one district would sit exactly on top of each
+      // other, so the station's own district says both things at once.
+      if (isHome && station.species != null) note = station.species + ' species · ' + note;
+      specs.push({
+        area: row.area,
+        name: isHome ? 'Home' : row.area,
+        note: note,
+        rank: row.count + (isHome ? 1e6 : 0)
+      });
+    });
+
+    if (homeArea) {
+      var mark = svgEl('circle', 'field-home');
+      mark.setAttribute('cx', String(areaAt[homeArea][0]));
+      mark.setAttribute('cy', String(areaAt[homeArea][1]));
+      mark.setAttribute('r', '6');
+      marks.appendChild(mark);
+
+      var already = specs.some(function (s) { return s.area === homeArea; });
+      if (!already) {
+        specs.push({
+          area: homeArea,
+          name: 'Home',
+          note: station.species != null ? station.species + ' species' : '',
+          rank: 1e6
+        });
+      }
+    }
+
+    var selectedPath = svgEl('path', 'field-selected');
+    marks.appendChild(selectedPath);
+
+    placeLabels(specs);
+    markSelection();
+  }
+
+  /* Districts are small and their names are not, so labels collide. Place
+   * the busiest first and nudge each later one clear; anything with
+   * nowhere to go is dropped rather than stacked, since the shading and
+   * the list still say what it would have said. */
+  function placeLabels(specs) {
+    var box = mapSvg.viewBox.baseVal;
+    var taken = [];
+    specs.sort(function (a, b) { return b.rank - a.rank; });
+
+    specs.forEach(function (spec) {
+      var node = el('button', 'field-label' + (spec.name === 'Home' ? ' field-label-home' : ''));
+      node.type = 'button';
+      node.dataset.area = spec.area;
+      node.appendChild(el('span', 'field-label-name', spec.name));
+      if (spec.note) node.appendChild(el('span', 'field-label-count', spec.note));
+      node.addEventListener('click', function () { select(spec.area); });
+      mapLabels.appendChild(node);
+
+      var anchor = areaAt[spec.area] || [0, 0];
+      var left = anchor[0] / box.width * 100;
+      var top = anchor[1] / box.height * 100;
+      node.style.left = left + '%';
+
+      var size = node.getBoundingClientRect();
+      var host = mapLabels.getBoundingClientRect();
+      var halfWidth = size.width / 2;
+      var halfHeight = size.height / 2;
+      var centreX = host.width * left / 100;
+
+      var offsets = [0, -1, 1, -2, 2, -3, 3];
+      var placed = false;
+      for (var i = 0; i < offsets.length && !placed; i++) {
+        var centreY = host.height * top / 100 + offsets[i] * (size.height + 3);
+        var rect = [centreX - halfWidth, centreY - halfHeight,
+                    centreX + halfWidth, centreY + halfHeight];
+        if (rect[1] < 0 || rect[3] > host.height) continue;
+        var clash = taken.some(function (other) {
+          return rect[0] < other[2] && rect[2] > other[0]
+              && rect[1] < other[3] && rect[3] > other[1];
+        });
+        if (clash) continue;
+        taken.push(rect);
+        node.style.top = (centreY / host.height * 100) + '%';
+        placed = true;
+      }
+      if (!placed) node.remove();
+    });
+  }
+
+  function markSelection() {
+    Object.keys(areaPaths).forEach(function (name) {
+      areaPaths[name].setAttribute('data-on', name === selected ? 'true' : 'false');
+    });
+    var outline = mapSvg.querySelector('.field-selected');
+    if (outline) {
+      var path = selected && areaPaths[selected];
+      outline.setAttribute('d', path ? path.getAttribute('d') : '');
+    }
+    mapLabels.querySelectorAll('.field-label').forEach(function (node) {
+      node.setAttribute('data-on', node.dataset.area === selected ? 'true' : 'false');
+    });
+  }
+
+  function select(name) {
+    selected = (name && name !== selected) ? name : null;
+    markSelection();
+    renderList();
+  }
+
+  // ---------------------------------------------------------- the legend
+  function buildLegend() {
+    var wrap = el('div', 'field-legend');
+    wrap.appendChild(el('span', 'field-legend-label', 'fewer'));
+    HEAT_OPACITY.forEach(function (opacity, index) {
+      var chip = el('i', 'field-legend-chip');
+      chip.style.opacity = String(opacity);
+      chip.title = HEAT_STOPS[index]
+        + (index + 1 < HEAT_STOPS.length ? '-' + (HEAT_STOPS[index + 1] - 1) : '+')
+        + ' caught';
+      wrap.appendChild(chip);
+    });
+    wrap.appendChild(el('span', 'field-legend-label', 'more'));
+    return wrap;
+  }
+
+  // ------------------------------------------------------------ the list
+  function timeText(iso) {
+    if (!iso) return '';
+    var when = new Date(iso);
+    if (isNaN(when)) return '';
+    return when.toLocaleString(undefined, {
+      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+    });
+  }
+
+  function renderList() {
+    var rows = selected
+      ? catches.filter(function (c) { return c.area === selected; })
+      : catches;
+
+    countEl.textContent = selected
+      ? selected + ' - ' + rows.length + (rows.length === 1 ? ' catch' : ' catches')
+      : rows.length + (rows.length === 1 ? ' catch' : ' catches') + ' in the field';
+
+    listEl.textContent = '';
+    if (!rows.length) {
+      listEl.appendChild(el('p', 'field-note', selected
+        ? 'Nothing caught in ' + selected + ' yet.'
+        : 'Nothing yet. Take the site outside and record something.'));
+      return;
+    }
+
+    rows.forEach(function (row) {
+      var item = el('div', 'field-row');
+      var head = el('div', 'field-row-head');
+
+      // The name opens the same species page the Atlas opens, by setting
+      // the hash apt.js already routes on - no new coupling to that file.
+      var name = el('button', 'field-row-name', row.com || row.sci);
+      name.type = 'button';
+      name.addEventListener('click', function () {
+        if (row.sci) location.hash = '#sci=' + encodeURIComponent(row.sci);
+      });
+      head.appendChild(name);
+      head.appendChild(el('span', 'field-row-conf',
+        row.conf == null ? '' : Math.round(row.conf * 100) + '%'));
+      item.appendChild(head);
+
+      var meta = [];
+      if (row.place) meta.push(row.place);
+      var when = timeText(row.at);
+      if (when) meta.push(when);
+      if (row.who) meta.push(row.who);
+      item.appendChild(el('span', 'field-row-meta', meta.join('  ·  ')));
+
+      if (row.audio) {
+        var audio = document.createElement('audio');
+        audio.controls = true;
+        audio.preload = 'none';
+        audio.src = API + '?action=audio&id=' + encodeURIComponent(row.id);
+        item.appendChild(audio);
+      }
+      listEl.appendChild(item);
+    });
+  }
+
+  var loading = null;
+  function refresh(force) {
+    if (loading && !force) return loading;
+    loading = Promise.all([loadShape(), api('list')]).then(function (both) {
+      var shape = both[0];
+      var data = both[1];
+      catches = data.submissions || [];
+      if (!mapSvg.querySelector('.field-land')) drawShape(shape);
+      paintHeat(data.areas || [], data.station);
+      emptyEl.hidden = true;
+      renderList();
+    }).catch(function (e) {
+      emptyEl.hidden = false;
+      emptyEl.textContent = String(e.message || e);
+    }).then(function () { loading = null; });
+    return loading;
+  }
+
+  // ------------------------------------------------------- the recorder
+  function openSheet() {
+    sheet.hidden = false;
+    document.body.classList.add('field-recording-open');
     showIntro();
   }
 
-  function close() {
+  function closeSheet() {
     stopRecording(true);
-    panel.hidden = true;
-    document.body.classList.remove('field-open');
+    sheet.hidden = true;
+    document.body.classList.remove('field-recording-open');
   }
 
-  function setBody(nodes) {
-    body.textContent = '';
-    (Array.isArray(nodes) ? nodes : [nodes]).forEach(function (n) { body.appendChild(n); });
+  function setSheet(nodes) {
+    sheetBody.textContent = '';
+    (Array.isArray(nodes) ? nodes : [nodes]).forEach(function (n) { sheetBody.appendChild(n); });
   }
 
   function showIntro() {
-    var wrap = el('div', 'field-intro');
+    var wrap = el('div', 'field-step');
+    wrap.appendChild(el('h3', 'field-step-title', 'Record a bird'));
     wrap.appendChild(el('p', 'field-lead',
-      'Point your phone at the bird and record a few seconds. The station '
-      + 'will listen and offer what it thinks it heard.'));
+      'Point your phone at the bird and hold still. The station listens to '
+      + 'the clip with the same model it uses at home, and tells you what it '
+      + 'heard.'));
 
     if (!canRecord()) {
-      var why = window.isSecureContext
+      wrap.appendChild(el('p', 'field-note', window.isSecureContext
         ? 'This browser has no microphone recording.'
-        : 'Recording needs a secure connection. Open the site over https to record here.';
-      wrap.appendChild(el('p', 'field-note', why));
+        : 'Recording needs a secure connection. Open the site over https to record here.'));
     } else {
-      var btn = el('button', 'field-record', 'start recording');
+      var btn = el('button', 'field-primary', 'start recording');
       btn.type = 'button';
       btn.addEventListener('click', startRecording);
       wrap.appendChild(btn);
     }
-
-    var listBtn = el('button', 'field-link', 'see what has been caught');
-    listBtn.type = 'button';
-    listBtn.addEventListener('click', showList);
-    wrap.appendChild(listBtn);
-    setBody(wrap);
+    setSheet(wrap);
   }
 
-  // ----------------------------------------------------------- recording
   function startRecording() {
     var constraints = { audio: {
       // Phone browsers assume speech and apply processing that is actively
@@ -134,18 +498,19 @@
       channelCount: 1
     } };
 
-    var wrap = el('div', 'field-recording');
+    var wrap = el('div', 'field-step');
+    wrap.appendChild(el('h3', 'field-step-title', 'Listening'));
+    var count = el('p', 'field-count', MAX_SECONDS + 's');
     var meter = el('div', 'field-meter');
     var bar = el('div', 'field-meter-bar');
     meter.appendChild(bar);
-    var count = el('p', 'field-count', 'listening… ' + MAX_SECONDS + 's');
-    var stopBtn = el('button', 'field-stop', 'stop and send');
+    var stopBtn = el('button', 'field-primary field-stop', 'stop and send');
     stopBtn.type = 'button';
     stopBtn.addEventListener('click', function () { stopRecording(false); });
     wrap.appendChild(count);
     wrap.appendChild(meter);
     wrap.appendChild(stopBtn);
-    setBody(wrap);
+    setSheet(wrap);
 
     navigator.mediaDevices.getUserMedia(constraints).then(function (s) {
       stream = s;
@@ -163,14 +528,13 @@
       var left = MAX_SECONDS;
       tickTimer = setInterval(function () {
         left -= 1;
-        count.textContent = left > 0 ? 'listening… ' + left + 's' : 'finishing…';
+        count.textContent = left > 0 ? left + 's' : 'finishing';
       }, 1000);
       stopTimer = setTimeout(function () { stopRecording(false); }, MAX_SECONDS * 1000);
     }).catch(function (e) {
-      var msg = (e && e.name === 'NotAllowedError')
+      showError((e && e.name === 'NotAllowedError')
         ? 'Microphone access was declined.'
-        : 'Could not open the microphone: ' + ((e && e.message) || e);
-      showError(msg);
+        : 'Could not open the microphone: ' + ((e && e.message) || e));
     });
   }
 
@@ -215,12 +579,18 @@
     }
   }
 
-  // -------------------------------------------------------------- upload
+  function working(message) {
+    var wrap = el('div', 'field-step');
+    wrap.appendChild(el('div', 'field-spinner'));
+    wrap.appendChild(el('p', 'field-note', message));
+    setSheet(wrap);
+  }
+
   function upload(mime) {
     if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
     if (!chunks.length) return showError('nothing was recorded');
 
-    setBody(el('p', 'field-note', 'sending…'));
+    working('sending');
     var blob = new Blob(chunks, { type: mime || 'audio/webm' });
     chunks = [];
 
@@ -234,7 +604,7 @@
       }
       return api('submit', { method: 'POST', body: form });
     }).then(function (j) {
-      setBody(el('p', 'field-note', 'the station is listening to it…'));
+      working('the station is listening to it');
       poll(j.id, 0);
     }).catch(function (e) { showError(String(e.message || e)); });
   }
@@ -242,170 +612,163 @@
   function poll(id, attempt) {
     if (attempt > POLL_LIMIT) {
       return showError('the station is taking too long. It may still finish - '
-        + 'check the list in a minute.');
+        + 'close this and look at the list in a minute.');
     }
     api('result&id=' + encodeURIComponent(id)).then(function (j) {
       if (j.status === 'pending' || j.status === 'analysing') {
         setTimeout(function () { poll(id, attempt + 1); }, POLL_MS);
         return;
       }
-      if (j.status === 'failed') return showError(j.error || 'the recording could not be analysed');
-      showCandidates(id, j.candidates || [], j.error);
+      if (j.status === 'confirmed') return showCaught(j);
+      if (j.status === 'unsure' || j.status === 'rejected') return showUnsure();
+      showError(j.error || 'the recording could not be analysed');
     }).catch(function (e) { showError(String(e.message || e)); });
   }
 
-  // ---------------------------------------------------------- confirming
-  function showCandidates(id, candidates, note) {
-    var wrap = el('div', 'field-candidates');
-    if (!candidates.length) {
+  function showCaught(result) {
+    var wrap = el('div', 'field-step');
+    wrap.appendChild(el('p', 'field-eyebrow', 'caught'
+      + (result.place ? ' at ' + result.place : '')));
+    wrap.appendChild(el('h3', 'field-caught', result.com || result.sci));
+    if (result.sci && result.com && result.sci !== result.com) {
+      wrap.appendChild(el('p', 'field-caught-sci', result.sci));
+    }
+    if (result.conf != null) {
       wrap.appendChild(el('p', 'field-note',
-        note || 'Nothing recognisable in that one. Try again closer to the bird.'));
-      var again = el('button', 'field-record', 'record another');
-      again.type = 'button';
-      again.addEventListener('click', showIntro);
-      wrap.appendChild(again);
-      setBody(wrap);
-      return;
+        Math.round(result.conf * 100) + '% sure'));
     }
 
-    wrap.appendChild(el('p', 'field-lead', 'Which one was it?'));
-    candidates.forEach(function (c) {
-      var row = el('button', 'field-candidate');
-      row.type = 'button';
-      row.appendChild(el('span', 'field-cand-com', c.com || c.sci));
-      row.appendChild(el('span', 'field-cand-sci', c.sci));
-      row.appendChild(el('span', 'field-cand-conf', Math.round((c.conf || 0) * 100) + '%'));
-      row.addEventListener('click', function () { confirm(id, c); });
-      wrap.appendChild(row);
+    var read = el('button', 'field-primary', 'read about it');
+    read.type = 'button';
+    read.addEventListener('click', function () {
+      closeSheet();
+      if (result.sci) location.hash = '#sci=' + encodeURIComponent(result.sci);
     });
+    wrap.appendChild(read);
 
-    var none = el('button', 'field-link', 'none of these - discard it');
-    none.type = 'button';
-    none.addEventListener('click', function () { reject(id); });
-    wrap.appendChild(none);
-    setBody(wrap);
-  }
-
-  function confirm(id, candidate) {
-    setBody(el('p', 'field-note', 'saving…'));
-    api('confirm', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: id, sci: candidate.sci })
-    }).then(function (j) {
-      var wrap = el('div', 'field-done');
-      wrap.appendChild(el('p', 'field-lead', (j.com || j.sci) + ' - caught.'));
-      var again = el('button', 'field-record', 'record another');
-      again.type = 'button';
-      again.addEventListener('click', showIntro);
-      wrap.appendChild(again);
-      var list = el('button', 'field-link', 'see everything caught');
-      list.type = 'button';
-      list.addEventListener('click', showList);
-      wrap.appendChild(list);
-      setBody(wrap);
-    }).catch(function (e) { showError(String(e.message || e)); });
-  }
-
-  function reject(id) {
-    api('reject', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: id })
-    }).then(showIntro).catch(function (e) { showError(String(e.message || e)); });
-  }
-
-  // ------------------------------------------------------------- listing
-  function showList() {
-    setBody(el('p', 'field-note', 'loading…'));
-    api('list').then(function (j) {
-      var subs = j.submissions || [];
-      var wrap = el('div', 'field-list');
-      wrap.appendChild(el('p', 'field-lead', 'Caught in the field'));
-      if (!subs.length) {
-        wrap.appendChild(el('p', 'field-note', 'Nothing yet. Go and find something.'));
-      }
-      subs.forEach(function (s) {
-        var row = el('div', 'field-row');
-        var head = el('div', 'field-row-head');
-        head.appendChild(el('span', 'field-cand-com', s.com || s.sci));
-        head.appendChild(el('span', 'field-cand-conf',
-          s.conf == null ? '' : Math.round(s.conf * 100) + '%'));
-        row.appendChild(head);
-
-        var meta = [];
-        if (s.at) meta.push(new Date(s.at).toLocaleString());
-        if (s.lat != null && s.lon != null) {
-          meta.push(s.lat.toFixed(4) + ', ' + s.lon.toFixed(4));
-        }
-        if (s.who) meta.push(s.who);
-        row.appendChild(el('span', 'field-row-meta', meta.join('  ·  ')));
-
-        if (s.audio) {
-          var audio = document.createElement('audio');
-          audio.controls = true;
-          audio.preload = 'none';
-          audio.src = './' + s.audio;
-          row.appendChild(audio);
-        }
-        wrap.appendChild(row);
-      });
-      var back = el('button', 'field-link', 'back');
-      back.type = 'button';
-      back.addEventListener('click', showIntro);
-      wrap.appendChild(back);
-      setBody(wrap);
-    }).catch(function (e) { showError(String(e.message || e)); });
-  }
-
-  function showError(message) {
-    var wrap = el('div', 'field-error');
-    wrap.appendChild(el('p', 'field-note', message));
-    var again = el('button', 'field-link', 'back');
+    var again = el('button', 'field-secondary', 'record another');
     again.type = 'button';
     again.addEventListener('click', showIntro);
     wrap.appendChild(again);
-    setBody(wrap);
+
+    var wrong = el('button', 'field-link', 'that was not it');
+    wrong.type = 'button';
+    wrong.addEventListener('click', function () {
+      api('reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: result.id })
+      }).then(function () { refresh(true); showIntro(); })
+        .catch(function (e) { showError(String(e.message || e)); });
+    });
+    wrap.appendChild(wrong);
+
+    setSheet(wrap);
+    refresh(true);
+  }
+
+  function showUnsure() {
+    var wrap = el('div', 'field-step');
+    wrap.appendChild(el('h3', 'field-step-title', 'Could not make that one out'));
+    wrap.appendChild(el('p', 'field-lead',
+      'Nothing in that clip scored high enough to put a name to. Get closer '
+      + 'if you can, or wait for the bird to call again.'));
+    var again = el('button', 'field-primary', 'try again');
+    again.type = 'button';
+    again.addEventListener('click', startRecording);
+    wrap.appendChild(again);
+    setSheet(wrap);
+  }
+
+  function showError(message) {
+    var wrap = el('div', 'field-step');
+    wrap.appendChild(el('h3', 'field-step-title', 'That did not work'));
+    wrap.appendChild(el('p', 'field-note', message));
+    var again = el('button', 'field-secondary', 'back');
+    again.type = 'button';
+    again.addEventListener('click', showIntro);
+    wrap.appendChild(again);
+    setSheet(wrap);
   }
 
   // --------------------------------------------------------------- mount
-  function mount() {
-    if (document.getElementById('fieldFab')) return;
+  function buildSheet() {
+    sheet = el('div', 'field-sheet');
+    sheet.id = 'fieldSheet';
+    sheet.hidden = true;
+    sheet.setAttribute('role', 'dialog');
+    sheet.setAttribute('aria-modal', 'true');
+    sheet.setAttribute('aria-label', 'record a bird');
 
-    fab = el('button', 'field-fab');
-    fab.id = 'fieldFab';
-    fab.type = 'button';
-    fab.setAttribute('aria-label', 'record a bird in the field');
-    fab.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" '
-      + 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round">'
-      + '<rect x="9" y="2.5" width="6" height="11" rx="3"/>'
-      + '<path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3.5"/></svg>';
-    fab.addEventListener('click', open);
-
-    panel = el('div', 'field-panel');
-    panel.id = 'fieldPanel';
-    panel.hidden = true;
-    panel.setAttribute('role', 'dialog');
-    panel.setAttribute('aria-label', 'field recording');
-
-    var head = el('div', 'field-head');
-    head.appendChild(el('span', 'field-title', 'Field recording'));
-    var x = el('button', 'field-close', '×');
-    x.type = 'button';
-    x.setAttribute('aria-label', 'close');
-    x.addEventListener('click', close);
-    head.appendChild(x);
-
-    body = el('div', 'field-body');
-    panel.appendChild(head);
-    panel.appendChild(body);
-
-    document.body.appendChild(fab);
-    document.body.appendChild(panel);
+    var card = el('div', 'field-sheet-card');
+    var close = el('button', 'field-sheet-close', '×');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'close');
+    close.addEventListener('click', closeSheet);
+    sheetBody = el('div', 'field-sheet-body');
+    card.appendChild(close);
+    card.appendChild(sheetBody);
+    sheet.appendChild(card);
+    document.body.appendChild(sheet);
 
     document.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape' && !panel.hidden) close();
+      if (e.key === 'Escape' && !sheet.hidden) closeSheet();
     });
+  }
+
+  function mount() {
+    view = document.getElementById('v3');
+    if (!view || view.dataset.fieldMounted === 'true') return;
+    view.dataset.fieldMounted = 'true';
+
+    var wrap = el('div', 'field-wrap');
+
+    var record = el('button', 'field-cta', 'record a bird');
+    record.type = 'button';
+    record.addEventListener('click', openSheet);
+
+    var head = el('div', 'field-headrow');
+    head.appendChild(el('p', 'field-lead',
+      'Birds caught away from the station, by where they were heard. '
+      + 'Tap a district to see just those.'));
+    head.appendChild(record);
+    wrap.appendChild(head);
+
+    mapHost = el('div', 'field-map');
+    mapSvg = svgEl('svg', 'field-map-svg');
+    mapSvg.setAttribute('role', 'img');
+    mapSvg.setAttribute('aria-label', 'Singapore, shaded by birds caught in each district');
+    mapLabels = el('div', 'field-map-labels');
+    mapHost.appendChild(mapSvg);
+    mapHost.appendChild(mapLabels);
+    wrap.appendChild(mapHost);
+
+    legendEl = buildLegend();
+    wrap.appendChild(legendEl);
+
+    emptyEl = el('p', 'field-note field-problem');
+    emptyEl.hidden = true;
+    wrap.appendChild(emptyEl);
+
+    countEl = el('p', 'field-count-line');
+    wrap.appendChild(countEl);
+    listEl = el('div', 'field-list');
+    wrap.appendChild(listEl);
+
+    wrap.appendChild(el('p', 'field-credit',
+      'District boundaries from geoBoundaries, CC BY 4.0.'));
+
+    view.appendChild(wrap);
+    buildSheet();
+
+    // Load when the view is first reached rather than on every page load.
+    // The slider button is the only way in besides a refresh landing back
+    // on the view somebody left, which apt.js records under this key.
+    var tab = document.querySelector('#slider button[data-i="3"]');
+    if (tab) tab.addEventListener('click', function () { refresh(); });
+    var restored = null;
+    try { restored = localStorage.getItem('bird:view'); } catch (e) { /* private mode */ }
+    if (restored === '3') refresh();
   }
 
   if (document.readyState === 'loading') {

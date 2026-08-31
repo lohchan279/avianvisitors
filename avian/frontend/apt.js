@@ -103,7 +103,7 @@
   // Each view's title text. The shared static-head shows one of these
   // based on the current view; identical adjacent values mean the title
   // stays put with no fade (collage and stats both say Heard Recently).
-  var VIEW_TITLES = ['Heard Recently', 'Heard Recently', 'Avian Atlas'];
+  var VIEW_TITLES = ['Heard Recently', 'Heard Recently', 'Avian Atlas', 'On the Map'];
   var EMPTY_WINDOW_COPY = 'no detections heard in this window';
   var staticHead = document.querySelector('.static-head');
   var staticTitle = document.getElementById('staticTitle');
@@ -150,7 +150,7 @@
   var currentView = readSavedView();
   function go(i, options) {
     options = options || {};
-    i = Math.max(0, Math.min(2, i));
+    i = Math.max(0, Math.min(VIEW_TITLES.length - 1, i));
     // Only a genuine view *switch* replays the entrance. go() also fires when
     // a card is expanded (it sets the #sci= hash, which routes through go(2))
     // while already on the atlas - that must not retrigger the load-in.

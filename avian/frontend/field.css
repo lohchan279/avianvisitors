@@ -1,138 +1,287 @@
-/* Field recordings.
+/* The Map view.
  *
  * Every colour, face and edge comes from the tokens styles.css already
- * defines, so this panel follows the station's theme - including the
- * charcoal dark mode - without knowing anything about it. The literals
- * after each var() are only a safety net for a page that somehow loads
- * this stylesheet without the other.
+ * defines, so this follows the station's theme - including the charcoal
+ * dark mode - without knowing anything about it. The literals after each
+ * var() are only a safety net for a page that somehow loads this
+ * stylesheet without the other.
  *
  * Two house rules worth keeping to, both borrowed rather than invented:
  * the site draws edges with the shadow recipes (--edge, --raised,
  * --edge-lg) instead of flat 1px borders, and it sets faces inline from
- * system stacks rather than loading webfonts. A panel with its own
- * borders and its own font reads as a different application bolted on,
- * which is exactly what this must not look like.
+ * system stacks rather than loading webfonts. A view with its own borders
+ * and its own font reads as a different application bolted on, which is
+ * exactly what this must not look like.
  *
  * Every selector is prefixed .field-; nothing here touches a class the
- * rest of the site owns.
+ * rest of the site owns. Note that .map- is already upstream's, for the
+ * station-location picker in settings - hence .field- for a view called
+ * Map.
  */
 
-.field-fab {
-  position: fixed;
-  right: 18px;
-  bottom: 18px;
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
-  border: 0;
-  background: var(--paper, #fcfcfb);
-  color: var(--ink, #1a1612);
-  box-shadow: var(--edge-lg, 0 8px 28px rgba(26,22,18,.1));
-  display: grid;
-  place-items: center;
-  cursor: pointer;
-  z-index: 40;
-  transition: transform .16s ease;
-}
-.field-fab svg { width: 22px; height: 22px; }
-.field-fab:hover { transform: translateY(-1px); }
-.field-fab:active { transform: translateY(0); }
-.field-fab:focus-visible { outline: 2px solid var(--accent, #4a3f31); outline-offset: 3px; }
-/* The panel covers the button on a phone; hiding it avoids a stray tap
-   target underneath the sheet. */
-.field-open .field-fab { display: none; }
-
-.field-panel {
-  position: fixed;
-  right: 18px;
-  bottom: 18px;
-  width: min(380px, calc(100vw - 36px));
-  max-height: min(560px, calc(100vh - 36px));
-  display: flex;
-  flex-direction: column;
-  background: var(--paper, #fcfcfb);
-  color: var(--ink, #1a1612);
-  border: 0;
-  border-radius: 16px;
-  box-shadow: var(--edge-lg, 0 12px 40px rgba(26,22,18,.14));
-  font-family: ui-serif, "Iowan Old Style", "Apple Garamond", Georgia, serif;
-  z-index: 41;
-  overflow: hidden;
-}
-@media (max-width: 520px) {
-  .field-panel { right: 10px; left: 10px; bottom: 10px; width: auto; }
+.field-wrap {
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+  padding-bottom: 24px;
 }
 
-.field-head {
+.field-headrow {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  padding: 13px 15px;
-  border-bottom: 1px solid var(--hairline, rgba(26,22,18,.14));
+  gap: 18px;
+  margin: 4px 0 14px;
 }
-.field-title { font-size: 1rem; font-weight: 600; }
-.field-close {
-  border: 0;
-  background: none;
-  color: var(--ink-soft, #908576);
-  font-size: 1.5rem;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0 4px;
+
+.field-lead {
+  margin: 0;
+  max-width: 46ch;
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--ink, #1a1612);
 }
-.field-close:focus-visible { outline: 2px solid var(--accent, #4a3f31); outline-offset: 2px; }
-
-.field-body { padding: 15px; overflow-y: auto; }
-
-.field-lead { margin: 0 0 12px; font-size: 1rem; line-height: 1.5; }
 .field-note {
   margin: 0 0 12px;
   font-size: .9rem;
   line-height: 1.5;
   color: var(--ink-soft, #908576);
 }
+.field-problem { color: var(--danger, #9b3f37); }
 
-.field-record,
-.field-stop {
-  display: block;
-  width: 100%;
-  padding: 11px 14px;
-  border: 0;
-  border-radius: 10px;
-  background: var(--ink, #1a1612);
-  color: var(--paper, #fcfcfb);
-  font: inherit;
-  font-size: .95rem;
+/* ---------------------------------------------------------- the map */
+
+.field-map {
+  position: relative;
+  border-radius: 14px;
+  background: var(--paper, #fcfcfb);
+  box-shadow: var(--recess, none);
+  padding: 10px;
+  overflow: hidden;
+}
+.field-map-svg { display: block; width: 100%; height: auto; }
+
+.field-area {
+  fill: var(--paper-3, #e8e6df);
   cursor: pointer;
+  transition: fill-opacity 180ms ease;
 }
-.field-stop { background: var(--danger, #9b3f37); }
-.field-record:hover, .field-stop:hover { opacity: .88; }
-.field-record:focus-visible, .field-stop:focus-visible {
-  outline: 2px solid var(--accent, #4a3f31); outline-offset: 2px;
+/* Hover fades the land toward the card behind it, which reads as a
+   lift in both themes - where swapping to another paper token would
+   lighten in one and darken in the other. */
+.field-area:hover { fill-opacity: .55; }
+
+.field-wash { fill: var(--danger, #9b3f37); pointer-events: none; }
+
+.field-selected {
+  fill: none;
+  stroke: var(--ink, #1a1612);
+  stroke-width: 1.75;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
 }
 
-.field-link {
-  display: block;
-  width: 100%;
-  margin-top: 10px;
-  padding: 8px;
+/* Hairlines that stay hairlines: the SVG is scaled to the container, so
+   an ordinary stroke-width would thicken on a wide screen and vanish on
+   a phone. */
+.field-borders {
+  fill: none;
+  stroke: var(--paper, #fcfcfb);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+.field-home {
+  fill: none;
+  stroke: var(--ink, #1a1612);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
+}
+
+/* Labels are HTML over the SVG rather than <text> inside it: text in a
+   scaled viewBox scales with it, which means unreadable on a phone and
+   oversized on a monitor. */
+.field-map-labels {
+  position: absolute;
+  inset: 10px;
+  pointer-events: none;
+}
+.field-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: grid;
+  justify-items: center;
+  gap: 1px;
+  max-width: 96px;
+  padding: 3px 6px;
   border: 0;
-  background: none;
-  color: var(--ink-soft, #908576);
-  font: 11px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  border-radius: 7px;
+  background: var(--paper, #fcfcfb);
+  color: var(--ink, #1a1612);
+  cursor: pointer;
+  pointer-events: auto;
+  text-align: center;
+}
+.field-label[data-on="true"] { background: var(--ink, #1a1612); color: var(--paper, #fcfcfb); }
+.field-label:focus-visible { outline: 2px solid var(--accent, #4a3f31); outline-offset: 1px; }
+.field-label-name {
+  font: 10px/1.1 ui-monospace, "SF Mono", Menlo, monospace;
   letter-spacing: .08em;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  cursor: pointer;
+  text-transform: uppercase;
 }
-.field-link:focus-visible { outline: 2px solid var(--accent, #4a3f31); outline-offset: 2px; }
+.field-label-count {
+  font: 9px/1.2 ui-monospace, "SF Mono", Menlo, monospace;
+  opacity: .72;
+}
+.field-label-home .field-label-name { letter-spacing: .14em; }
 
-.field-count {
-  margin: 0 0 10px;
-  font: 11px/1 ui-monospace, "SF Mono", Menlo, monospace;
+.field-legend {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 10px 0 20px;
+}
+.field-legend-label {
+  font: 9px/1 ui-monospace, "SF Mono", Menlo, monospace;
   letter-spacing: .14em;
   text-transform: uppercase;
   color: var(--ink-soft, #908576);
+}
+.field-legend-chip {
+  width: 26px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--danger, #9b3f37);
+}
+
+.field-credit {
+  margin: 22px 0 0;
+  font: 9px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .06em;
+  color: var(--ink-soft, #908576);
+}
+
+/* ------------------------------------------------------- the catches */
+
+.field-count-line {
+  margin: 0 0 10px;
+  font: 10px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--ink-soft, #908576);
+}
+
+.field-row {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--hairline, rgba(26,22,18,.14));
+}
+.field-row:last-of-type { border-bottom: 0; }
+.field-row-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.field-row-name {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--hairline, rgba(26,22,18,.14));
+  text-underline-offset: 3px;
+}
+.field-row-name:hover { text-decoration-color: currentColor; }
+.field-row-name:focus-visible { outline: 2px solid var(--accent, #4a3f31); outline-offset: 2px; }
+.field-row-conf {
+  font: 11px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--ink-soft, #908576);
+  font-variant-numeric: tabular-nums;
+}
+.field-row-meta {
+  display: block;
+  margin: 3px 0 7px;
+  font: 10px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .06em;
+  color: var(--ink-soft, #908576);
+}
+.field-row audio { width: 100%; height: 32px; }
+
+/* --------------------------------------------------- the record sheet */
+
+.field-cta {
+  flex: 0 0 auto;
+  padding: 10px 18px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--ink, #1a1612);
+  color: var(--paper, #fcfcfb);
+  font: 10px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: var(--edge, none);
+}
+.field-cta:hover { opacity: .88; }
+.field-cta:focus-visible { outline: 2px solid var(--accent, #4a3f31); outline-offset: 3px; }
+
+/* Full screen on purpose. Recording is a one-thing-at-a-time act done at
+   arm's length with a bird in view, so the page behind it is a
+   distraction rather than context. */
+.field-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: var(--paper, #fcfcfb);
+}
+.field-sheet-card {
+  position: relative;
+  width: min(420px, 100%);
+  text-align: center;
+  font-family: ui-serif, "Iowan Old Style", "Apple Garamond", Georgia, serif;
+  color: var(--ink, #1a1612);
+}
+.field-sheet-close {
+  position: absolute;
+  top: -8px;
+  right: -4px;
+  border: 0;
+  background: none;
+  color: var(--ink-soft, #908576);
+  font-size: 1.6rem;
+  line-height: 1;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.field-sheet-close:focus-visible { outline: 2px solid var(--accent, #4a3f31); outline-offset: 2px; }
+.field-sheet-body { padding-top: 26px; }
+.field-step { display: grid; gap: 12px; justify-items: stretch; }
+.field-step-title { margin: 0; font-size: 1.35rem; font-weight: 600; }
+.field-step .field-lead, .field-step .field-note { margin: 0 auto; max-width: 34ch; }
+
+.field-eyebrow {
+  margin: 0;
+  font: 10px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--ink-soft, #908576);
+}
+.field-caught { margin: 0; font-size: 1.9rem; line-height: 1.15; font-weight: 600; }
+.field-caught-sci {
+  margin: 0;
+  font-style: italic;
+  font-size: 1rem;
+  color: var(--ink-soft, #908576);
+}
+
+.field-count {
+  margin: 0;
+  font: 2.4rem/1 ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
 }
 .field-meter {
   height: 6px;
@@ -140,7 +289,6 @@
   background: var(--control-track, #f3f2ee);
   box-shadow: var(--recess, none);
   overflow: hidden;
-  margin-bottom: 15px;
 }
 .field-meter-bar {
   height: 100%;
@@ -150,54 +298,63 @@
   transition: width .08s linear;
 }
 
-/* One candidate per row: common name leading, scientific name beneath for
-   the doubtful case, score last because it is the least useful thing for
-   deciding which bird you just heard. */
-.field-candidate {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-areas: "com conf" "sci conf";
-  gap: 0 10px;
+.field-primary,
+.field-secondary {
   width: 100%;
-  text-align: left;
-  padding: 11px 13px;
-  margin-bottom: 8px;
+  padding: 12px 16px;
   border: 0;
   border-radius: 10px;
-  background: var(--paper-2, #f3f2ee);
-  box-shadow: var(--edge, none);
-  color: inherit;
   font: inherit;
+  font-size: .95rem;
   cursor: pointer;
 }
-.field-candidate:hover { background: var(--paper-3, #e8e6df); }
-.field-candidate:focus-visible { outline: 2px solid var(--accent, #4a3f31); outline-offset: 2px; }
-.field-cand-com { grid-area: com; font-size: .97rem; font-weight: 600; }
-.field-cand-sci {
-  grid-area: sci;
-  font-size: .8rem;
-  font-style: italic;
-  color: var(--ink-soft, #908576);
+.field-primary { background: var(--ink, #1a1612); color: var(--paper, #fcfcfb); }
+.field-secondary {
+  background: var(--paper-2, #f3f2ee);
+  color: var(--ink, #1a1612);
+  box-shadow: var(--edge, none);
 }
-.field-cand-conf {
-  grid-area: conf;
-  align-self: center;
-  font: 11px/1 ui-monospace, "SF Mono", Menlo, monospace;
-  color: var(--ink-soft, #908576);
-  font-variant-numeric: tabular-nums;
+.field-stop { background: var(--danger, #9b3f37); color: var(--paper, #fcfcfb); }
+.field-primary:hover, .field-secondary:hover { opacity: .88; }
+.field-primary:focus-visible, .field-secondary:focus-visible {
+  outline: 2px solid var(--accent, #4a3f31); outline-offset: 2px;
 }
 
-.field-row {
-  padding: 11px 0;
-  border-bottom: 1px solid var(--hairline, rgba(26,22,18,.14));
-}
-.field-row:last-of-type { border-bottom: 0; }
-.field-row-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-.field-row-meta {
-  display: block;
-  margin: 3px 0 7px;
-  font: 10px/1.4 ui-monospace, "SF Mono", Menlo, monospace;
-  letter-spacing: .06em;
+.field-link {
+  border: 0;
+  background: none;
   color: var(--ink-soft, #908576);
+  font: 10px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  padding: 8px;
+  cursor: pointer;
 }
-.field-row audio { width: 100%; height: 32px; }
+.field-link:focus-visible { outline: 2px solid var(--accent, #4a3f31); outline-offset: 2px; }
+
+.field-spinner {
+  width: 26px;
+  height: 26px;
+  margin: 8px auto;
+  border-radius: 50%;
+  border: 2px solid var(--hairline, rgba(26,22,18,.14));
+  border-top-color: var(--ink, #1a1612);
+  animation: field-spin 900ms linear infinite;
+}
+@keyframes field-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .field-spinner { animation-duration: 3s; }
+  .field-area { transition: none; }
+}
+
+@media (max-width: 700px) {
+  .field-headrow { flex-direction: column; align-items: stretch; gap: 12px; }
+  .field-cta { width: 100%; padding: 13px 18px; }
+  .field-map { padding: 6px; }
+  .field-map-labels { inset: 6px; }
+  .field-label-name { font-size: 8.5px; letter-spacing: .05em; }
+  .field-label-count { font-size: 8px; }
+  .field-caught { font-size: 1.6rem; }
+}
