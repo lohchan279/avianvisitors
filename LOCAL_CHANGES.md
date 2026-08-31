@@ -396,6 +396,23 @@ A fourth sheet beside Collage, Stats and Atlas. Three things live there:
 a district map of Singapore shaded by how many birds have been caught in
 each, a recorder, and the list of catches with their audio.
 
+**Home is a place on the map like any other.** The station is where most
+of the birds are, so a map that showed only what somebody carried a phone
+to would be a map of the exception — it read as "0 caught" on a station
+with hundreds of species. Selecting Home lists what the station itself has
+heard, most recent first, each name opening the species page. Those rows
+have no clip to play; the Collage and Stats views hold the whole record.
+
+Home stays off the heat ramp deliberately. A station out-detects any field
+district by three orders of magnitude, so putting it on the same scale
+would saturate one district and flatten every other to nothing. It gets a
+ring marker instead.
+
+The species come from walking the `(Date DESC, Time DESC)` index and
+keeping the first sighting of each — bounded by `STATION_SCAN`. Grouping
+the whole `detections` table would be a full scan on every request, and a
+station that has been listening for a year has a lot of table.
+
 **Coordinates go in and never come out.** The station stores the fix
 because the model needs it — the occurrence filter judges a clip by where
 it was heard — but `submit` resolves it to a planning-area name once, on

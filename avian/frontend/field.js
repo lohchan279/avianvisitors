@@ -130,6 +130,7 @@
   var areaAt = {};           // area name -> [x, y] in viewBox units
   var selected = null;
   var catches = [];
+  var station = null;   // the station itself: its area and what it has heard
   var mediaRecorder, chunks = [], stopTimer, tickTimer, stream;
 
   // ----------------------------------------------------------- the shape
@@ -392,7 +393,18 @@
     });
   }
 
+  function atHome() {
+    return !!(station && station.area && selected === station.area);
+  }
+
+  /* Home is a place on this map like any other, and the station is the
+   * one that hears the most. Selecting it lists what the station itself
+   * has picked up rather than the handful of clips somebody carried a
+   * phone to - a map that showed only the second would be a map of the
+   * exception. */
   function renderList() {
+    if (atHome()) return renderStation();
+
     var rows = selected
       ? catches.filter(function (c) { return c.area === selected; })
       : catches;
@@ -405,40 +417,83 @@
     if (!rows.length) {
       listEl.appendChild(el('p', 'field-note', selected
         ? 'Nothing caught in ' + selected + ' yet.'
-        : 'Nothing yet. Take the site outside and record something.'));
+        : 'Nothing recorded in the field yet.'));
+      // An empty field list is the common case, and "nothing" reads as
+      // an empty feature unless it says where the birds actually are.
+      if (!selected && station && station.area) {
+        var pointer = el('button', 'field-link', 'what the station has heard at home');
+        pointer.type = 'button';
+        pointer.addEventListener('click', function () { select(station.area); });
+        listEl.appendChild(pointer);
+      }
       return;
     }
 
-    rows.forEach(function (row) {
+    rows.forEach(function (row) { listEl.appendChild(catchRow(row)); });
+  }
+
+  /* One field catch as a row. The name opens the same species page the
+   * Atlas opens, by setting the hash apt.js already routes on - no new
+   * coupling to that file. */
+  function catchRow(row) {
+    var item = el('div', 'field-row');
+    var head = el('div', 'field-row-head');
+
+    var name = el('button', 'field-row-name', row.com || row.sci);
+    name.type = 'button';
+    name.addEventListener('click', function () {
+      if (row.sci) location.hash = '#sci=' + encodeURIComponent(row.sci);
+    });
+    head.appendChild(name);
+    head.appendChild(el('span', 'field-row-conf',
+      row.conf == null ? '' : Math.round(row.conf * 100) + '%'));
+    item.appendChild(head);
+
+    var meta = [];
+    if (row.place) meta.push(row.place);
+    var when = timeText(row.at);
+    if (when) meta.push(when);
+    if (row.who) meta.push(row.who);
+    item.appendChild(el('span', 'field-row-meta', meta.join('  ·  ')));
+
+    if (row.audio) {
+      var audio = document.createElement('audio');
+      audio.controls = true;
+      audio.preload = 'none';
+      audio.src = API + '?action=audio&id=' + encodeURIComponent(row.id);
+      item.appendChild(audio);
+    }
+    return item;
+  }
+
+  function renderStation() {
+    var heard = (station && station.heard) || [];
+    countEl.textContent = 'Home - '
+      + (station.species != null ? station.species + ' species heard here' : 'the station');
+
+    listEl.textContent = '';
+    if (!heard.length) {
+      listEl.appendChild(el('p', 'field-note',
+        'The station has not written anything down yet.'));
+      return;
+    }
+    listEl.appendChild(el('p', 'field-note',
+      'Most recent first, from the station itself - not field recordings, '
+      + 'so there is no clip to play here. The Collage and Stats views have '
+      + 'the whole record.'));
+
+    heard.forEach(function (row) {
       var item = el('div', 'field-row');
       var head = el('div', 'field-row-head');
-
-      // The name opens the same species page the Atlas opens, by setting
-      // the hash apt.js already routes on - no new coupling to that file.
       var name = el('button', 'field-row-name', row.com || row.sci);
       name.type = 'button';
       name.addEventListener('click', function () {
         if (row.sci) location.hash = '#sci=' + encodeURIComponent(row.sci);
       });
       head.appendChild(name);
-      head.appendChild(el('span', 'field-row-conf',
-        row.conf == null ? '' : Math.round(row.conf * 100) + '%'));
       item.appendChild(head);
-
-      var meta = [];
-      if (row.place) meta.push(row.place);
       var when = timeText(row.at);
-      if (when) meta.push(when);
-      if (row.who) meta.push(row.who);
-      item.appendChild(el('span', 'field-row-meta', meta.join('  ·  ')));
-
-      if (row.audio) {
-        var audio = document.createElement('audio');
-        audio.controls = true;
-        audio.preload = 'none';
-        audio.src = API + '?action=audio&id=' + encodeURIComponent(row.id);
-        item.appendChild(audio);
-      }
+      if (when) item.appendChild(el('span', 'field-row-meta', when));
       listEl.appendChild(item);
     });
   }
@@ -483,6 +538,7 @@
 
     loading = drawn.then(function () {
       return listed.then(function (data) {
+        station = data.station || null;
         paintHeat(data.areas || [], data.station);
         emptyEl.hidden = true;
         renderList();
@@ -775,8 +831,8 @@
 
     var head = el('div', 'field-headrow');
     head.appendChild(el('p', 'field-lead',
-      'Birds caught away from the station, by where they were heard. '
-      + 'Tap a district to see just those.'));
+      'Where the birds have been heard: the station at home, and anything '
+      + 'recorded out in the field. Tap a district to see just those.'));
     head.appendChild(record);
     wrap.appendChild(head);
 

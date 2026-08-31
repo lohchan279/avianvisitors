@@ -178,6 +178,23 @@ class FieldRecordingTests(unittest.TestCase):
         self.assertIn("error.status === 401", field)
         self.assertIn("Unlock with the station admin password", field)
 
+    def test_home_carries_what_the_station_has_heard(self):
+        # A station is where most of the birds are. A map that showed only
+        # the clips somebody carried a phone to would be a map of the
+        # exception, and it read as "0 caught" on a station with hundreds.
+        api = self.read("avian/api/submissions.php")
+        self.assertIn("'heard'", api)
+        # Walked along the (Date DESC, Time DESC) index rather than grouped
+        # over the whole table, which would be a full scan every request.
+        self.assertIn("ORDER BY Date DESC, Time DESC LIMIT :scan", api)
+        self.assertIn("STATION_SCAN", api)
+
+        field = self.read("avian/frontend/field.js")
+        self.assertIn("function renderStation", field)
+        self.assertIn("function atHome", field)
+        # And an empty field list has to point at where the birds are.
+        self.assertIn("what the station has heard at home", field)
+
     # ---- publishing the preview at a sublink -------------------------
     def test_expose_refuses_the_mode_that_opens_the_admin_gate(self):
         # --as admin turns the password gate off, which is free on

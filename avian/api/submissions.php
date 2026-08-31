@@ -68,6 +68,11 @@ $CONF    = preview_path('AV_BIRDNET_CONF', '/etc/birdnet/birdnet.conf');
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;   // ~8 MB; 15s of phone audio is ~250 KB
 const MAX_PENDING      = 20;                // backlog guard, not a rate limit
+// How far back to walk the detections index looking for distinct species,
+// and how many to keep. Bounded because Home is a summary, not an archive -
+// the Collage and Stats views are where the whole record lives.
+const STATION_SCAN     = 2000;
+const STATION_SPECIES  = 40;
 
 /** Read one value from birdnet.conf, tolerating the quoted PHP-ish format. */
 function conf_value(string $conf, string $key, string $fallback = ''): string {
@@ -394,19 +399,42 @@ if ($action === 'list') {
 
     // The station's own listening post. Its area, never its coordinates:
     // the map wants somewhere to put the mark, not the address.
+    //
+    // Home carries the birds it has actually heard, not just a count. A
+    // station is where most of the birds are, so a map that showed only
+    // what people carried a phone to would be a map of the exception.
     $home = avian_place_for(
         num_or_null(conf_value($CONF, 'LATITUDE', ''), -90, 90),
         num_or_null(conf_value($CONF, 'LONGITUDE', ''), -180, 180)
     );
-    $station = null;
+    $station = ['area' => $home['area'], 'species' => null, 'heard' => []];
     try {
-        $station = [
-            'area'    => $home['area'],
-            'species' => (int)$pdo->query('SELECT COUNT(DISTINCT Sci_Name) FROM detections')
-                ->fetchColumn(),
-        ];
+        $station['species'] = (int)$pdo->query(
+            'SELECT COUNT(DISTINCT Sci_Name) FROM detections')->fetchColumn();
+
+        // Walk the newest detections along the (Date DESC, Time DESC)
+        // index and keep the first sighting of each species. Grouping the
+        // whole table instead would be a full scan every request, and a
+        // station that has been listening for a year has a lot of table.
+        $recent = $pdo->prepare('SELECT Sci_Name, Com_Name, Date, Time FROM detections
+                                 ORDER BY Date DESC, Time DESC LIMIT :scan');
+        $recent->bindValue(':scan', STATION_SCAN, PDO::PARAM_INT);
+        $recent->execute();
+        $seen = [];
+        foreach ($recent as $r) {
+            $sci = (string)$r['Sci_Name'];
+            if (isset($seen[$sci])) continue;
+            $seen[$sci] = true;
+            $station['heard'][] = [
+                'sci' => $sci,
+                'com' => $r['Com_Name'],
+                'at'  => trim((string)$r['Date'] . 'T' . (string)$r['Time']),
+            ];
+            if (count($station['heard']) >= STATION_SPECIES) break;
+        }
     } catch (Throwable $e) {
-        $station = ['area' => $home['area'], 'species' => null];
+        // A station without a detections table is a fresh install, not a
+        // fault. The map still has field catches to show.
     }
 
     echo json_encode(['ok' => true, 'submissions' => $out, 'areas' => $areas,
