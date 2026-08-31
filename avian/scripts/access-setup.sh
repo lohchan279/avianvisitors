@@ -2,8 +2,9 @@
 # Find and install the two Cloudflare Access settings the field-recording
 # API needs, and check they work.
 #
-#   ./avian/scripts/access-setup.sh check      # what is configured now
-#   ./avian/scripts/access-setup.sh read       # read them off a real token
+#   ./avian/scripts/access-setup.sh check       # what is configured now
+#   ./avian/scripts/access-setup.sh discover https://ghlyms.com
+#   ./avian/scripts/access-setup.sh read        # read them off a real token
 #   sudo ./avian/scripts/access-setup.sh install <team-domain> <aud>
 #
 # The two values are:
@@ -47,6 +48,44 @@ valid_team() { [[ "$1" =~ ^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$ ]]; }
 valid_aud()  { [[ "$1" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; }
 
 case "$ACTION" in
+  discover)
+    # An unauthenticated request to a protected site is bounced to the
+    # team's login page, and that redirect names both values: the host is
+    # the team domain, and Access carries the application's audience tag
+    # in the query string. No sign-in, no cookie, no devtools.
+    url="${2:-}"
+    [ -n "$url" ] || { echo "usage: $0 discover https://your.site" >&2; exit 64; }
+    location=$(curl -sS -o /dev/null -D - --max-time 15 "$url" 2>/dev/null \
+      | tr -d '\r' | sed -n 's/^[Ll]ocation:[[:space:]]*//p' | head -1)
+    if [ -z "$location" ]; then
+      echo "no redirect from $url - is it actually behind Access?" >&2
+      echo "If you are already signed in, your browser may be sending a" >&2
+      echo "cookie; try again from a private window, or use: $0 read" >&2
+      exit 1
+    fi
+    php -r '
+      $url = trim(stream_get_contents(STDIN));
+      $host = parse_url($url, PHP_URL_HOST) ?: "";
+      if (!str_contains($host, "cloudflareaccess.com")) {
+        fwrite(STDERR, "the redirect does not point at Cloudflare Access:\n  $url\n");
+        exit(1);
+      }
+      parse_str((string)parse_url($url, PHP_URL_QUERY), $query);
+      printf("ACCESS_TEAM_DOMAIN=%s\n", $host);
+      $aud = (string)($query["kid"] ?? "");
+      if ($aud !== "") {
+        printf("ACCESS_AUD=%s\n", $aud);
+      } else {
+        fwrite(STDERR, "the redirect carried no audience tag; take it from\n"
+          . "Zero Trust -> Access -> Applications -> your app -> Overview.\n");
+      }
+    ' <<<"$location" || exit $?
+    echo >&2
+    echo "Confirm the audience against the application Overview page if you" >&2
+    echo "have more than one Access application, then:" >&2
+    echo "  sudo $0 install <team-domain> <aud>" >&2
+    ;;
+
   read)
     if [ -t 0 ]; then
       echo "Paste the CF_Authorization cookie (or a Cf-Access-Jwt-Assertion"
@@ -132,7 +171,7 @@ case "$ACTION" in
       echo "  ACCESS_AUD         ${aud:+set}${aud:-(not set)}"
       echo
       echo "The API falls back to the station admin password. To turn it on:"
-      echo "  $0 read"
+      echo "  $0 discover https://ghlyms.com"
       exit 1
     fi
     valid_team "$team" || { echo "ACCESS_TEAM_DOMAIN looks wrong: $team" >&2; exit 65; }
@@ -165,7 +204,7 @@ case "$ACTION" in
     ;;
 
   *)
-    echo "usage: $0 check | read | install <team-domain> <aud>" >&2
+    echo "usage: $0 check | discover <url> | read | install <team> <aud>" >&2
     exit 64
     ;;
 esac

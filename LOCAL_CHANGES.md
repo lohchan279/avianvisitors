@@ -281,11 +281,16 @@ A preview can be published at **`https://ghlyms.com/preview/`** while the
 real site carries on at `/`:
 
 ```bash
-./avian/scripts/preview.sh --expose --seed --db ~/BirdNET-Pi/scripts/birds.db
+sg caddy -c './avian/scripts/preview.sh --expose --seed --db ~/BirdNET-Pi/scripts/birds.db'
 sudo ./avian/scripts/preview-expose.sh install 8080     # in another shell
-# ... look at it on your phone ...
+# ... look at it on your phone, unlock with the admin password ...
 sudo ./avian/scripts/preview-expose.sh remove
 ```
+
+`sg caddy` because the admin credential state is `root:caddy 0640`, so a
+preview run by an ordinary shell cannot read it and every request would
+401 whatever password was typed. The preview says so and prints the fixed
+command rather than serving a login form that never works.
 
 A path on the existing host rather than a subdomain: no DNS record, no
 tunnel hostname, no second Access application. The site uses relative URLs
@@ -300,13 +305,28 @@ redirected**: `config.php` still writes the real station config,
 `generate.php` still spawns real work. So `--expose`:
 
 - refuses `--as admin` outright, and fails before building anything;
-- keeps the admin password gate **on**, and uses the station's real
-  `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` so a genuine assertion from the edge
-  verifies;
+- defaults to the station's own **password gate**, which needs nothing set
+  up in Cloudflare. `--as access` opts into the identity path instead,
+  using the station's real `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD` so a genuine
+  assertion from the edge verifies;
 - narrows the API to the endpoints that cannot mutate. Everything else is
   not merely refused but **absent** — `config.php`, `maintenance.php`,
   `generate.php`, `export.php`, `birdnet-status.php` and `birdweather.php`
   all return 404.
+
+The gate really does apply through the proxy, and this is worth knowing
+rather than assuming: `avian_is_direct_local_request()` treats a bare
+`127.0.0.1` request as local and lets it through when the LAN gate is off,
+which is how this station is configured. Caddy's `reverse_proxy` adds
+`X-Forwarded-*`, so a request arriving through `/preview/` is *not* direct
+local and the password is required. Measured both ways.
+
+One Caddy line earns its place: the admin session cookie is scoped to path
+`/avian/`, so under a `/preview/` prefix the browser would set it and then
+never send it back — unlocking would appear to work and silently not. The
+overlay block rewrites the cookie path to `/preview/avian/`, which also
+keeps the two sessions apart: same cookie name, different paths, so signing
+in to the preview cannot log you out of the real site.
 
 `preview-expose.sh` appends a delimited block to the site overlay rather
 than rewriting it, because that file already carries the `/stream` route
@@ -360,13 +380,24 @@ ACCESS_AUD="<Application Audience tag from the Access app>"
 
 With either missing, Access auth is simply off.
 
+Only needed for `--expose --as access` and for the real feature; the
+preview's password gate needs none of it.
+
 Finding them without transcribing a 64-character hex string:
 
 ```bash
-./avian/scripts/access-setup.sh read     # paste a CF_Authorization cookie
+./avian/scripts/access-setup.sh discover https://ghlyms.com
 sudo ./avian/scripts/access-setup.sh install <team-domain> <aud>
 ./avian/scripts/access-setup.sh check    # fetches the team certificates
 ```
+
+`discover` needs no sign-in and no devtools: an unauthenticated request to
+a protected site is bounced to the team login page, and that redirect names
+both values — the host is the team domain, and the `kid` query parameter is
+the application audience. Run it from somewhere not already signed in, or
+the browser cookie short-circuits the redirect. `read` is the fallback: it
+decodes a token you already have (`CF_Authorization`, from a signed-in
+browser).
 
 `read` decodes a token you already have — a browser signed in to the site
 holds one in its `CF_Authorization` cookie — and prints both values from

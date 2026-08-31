@@ -158,6 +158,29 @@ class FieldRecordingTests(unittest.TestCase):
         self.assertEqual(64, result.returncode, result.stdout)
         self.assertIn("will not run with --as admin", result.stdout)
 
+    def test_expose_defaults_to_the_password_gate_and_says_why_it_cannot(self):
+        # The admin credential state is root:caddy 0640, so a preview run
+        # by an ordinary shell cannot read it and every request would 401
+        # whatever password was typed. Failing with the fix beats failing
+        # with a login form that never works.
+        result = subprocess.run(
+            ["bash", "avian/scripts/preview.sh", "--expose"],
+            cwd=ROOT, env=dict(os.environ, AV_ADMIN_STATE_FILE="/nonexistent"),
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            timeout=120, check=False,
+        )
+        self.assertEqual(77, result.returncode, result.stdout)
+        self.assertIn("sg caddy", result.stdout)
+
+    def test_exposed_preview_moves_the_admin_session_cookie(self):
+        # The session cookie is scoped to /avian/. Served under /preview/
+        # the browser would set it and never send it back, so unlocking
+        # would appear to work and silently not.
+        self.assertIn("'path' => '/avian/'", self.read("avian/api/admin-auth.php"))
+        overlay = self.read("avian/scripts/preview-expose.sh")
+        self.assertIn('header_down Set-Cookie "Path=/avian/" "Path=/preview/avian/"',
+                      overlay)
+
     def test_expose_narrows_the_api_to_endpoints_that_cannot_mutate(self):
         preview = self.read("avian/scripts/preview.sh")
         narrow = re.search(r"grep -E '\^\(([^)]*)\)\\\.php\$'", preview)

@@ -34,16 +34,24 @@
 set -uo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ORIGINAL_ARGS="$*"
 PORT=8080
 DB_SOURCE=""
 SEED=0
 KEEP=0
-# admin - open, the way a LAN visitor sees the station with the gate off.
-# access - the admin gate stays on and the preview signs a Cloudflare
-#          Access assertion for every request, so what gets in is a
-#          verified identity and nothing else. That is the mode that
-#          answers "can the people on my Access policy record without
-#          being given the admin password".
+# Who the preview thinks is knocking.
+#
+# admin    - open. The password gate is off, the way a LAN visitor sees the
+#            station. Free on localhost, where anyone who can reach
+#            127.0.0.1 already has a shell. Refused with --expose.
+# password - the gate stays on and you unlock with the station admin
+#            password, exactly as on the real site. Needs no Cloudflare
+#            configuration at all, so it is what --expose defaults to.
+# access   - the gate stays on and the preview signs a Cloudflare Access
+#            assertion with a throwaway key, which answers "can the people
+#            on my Access policy record without the admin password".
+#            With --expose it uses the station's real Access settings, so
+#            a genuine assertion from the edge verifies.
 AS=admin
 AS_GIVEN=0
 # Exposing the preview through the tunnel is a different risk from running
@@ -57,9 +65,9 @@ while [ "$#" -gt 0 ]; do
     --db)    DB_SOURCE="${2:?--db needs a path}"; shift 2 ;;
     --seed)  SEED=1; shift ;;
     --keep)  KEEP=1; shift ;;
-    --as)    AS="${2:?--as needs admin or access}"; AS_GIVEN=1; shift 2 ;;
+    --as)    AS="${2:?--as needs admin, password or access}"; AS_GIVEN=1; shift 2 ;;
     --expose) EXPOSE=1; shift ;;
-    -h|--help) sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^set -/p' "${BASH_SOURCE[0]}" | sed '$d;s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
 done
@@ -170,7 +178,21 @@ EOF
 # mode outright and narrows the API surface to the endpoints the site
 # needs to render, which are the read-only ones.
 if [ "$EXPOSE" = 1 ]; then
-  AS=expose
+  # Default to the password gate: it needs nothing set up in Cloudflare,
+  # and the admin password already exists. --as access opts into the
+  # identity path instead.
+  if [ "$AS_GIVEN" = 0 ]; then
+    AS=password
+  elif [ "$AS" = access ]; then
+    AS=edge
+  fi
+
+  # Belt and braces for every exposed mode. Each of these endpoints
+  # already guards itself with the admin password, but a preview
+  # reachable from the internet should not offer a door to knock on.
+  grep -E '^(birdnet-api|submissions|wiki|recording|spectrogram|cutout|menu)\.php$' \
+    "$BASE/api-allowlist" >"$BASE/api-allowlist.narrow"
+  mv "$BASE/api-allowlist.narrow" "$BASE/api-allowlist"
 fi
 
 # ---- who the preview arrives as ---------------------------------------
@@ -198,38 +220,53 @@ case "$AS" in
     unset AV_REQUIRE_AUTH
     WHO="a Cloudflare Access visitor, $AV_PREVIEW_ACCESS_EMAIL (no admin password)"
     ;;
-  expose)
+  password)
+    # The station's own password gate, unchanged. The one requirement is
+    # that this process can read the admin credential state, which is
+    # root:caddy 0640 - the same group the real site runs as.
+    state=${AV_ADMIN_STATE_FILE:-/var/lib/avian-visitors/admin-auth.state}
+    if [ ! -r "$state" ]; then
+      cat >&2 <<WHY
+--as password needs to read $state, which is root:caddy 0640 so that only
+the web server can see it. This shell is not in the caddy group, so every
+request would answer 401 no matter what password you typed.
+
+Run the preview with that group instead:
+
+    sg caddy -c '$0 $ORIGINAL_ARGS'
+
+Nothing is granted beyond reading the same file the real site reads.
+WHY
+      exit 77
+    fi
+    unset AV_REQUIRE_AUTH
+    WHO="whoever unlocks with the station admin password"
+    ;;
+  edge)
     # The real team and audience, so a real assertion from the real edge
     # verifies. Nothing else is borrowed from the live config.
     team=$(sed -n 's/^[[:space:]]*ACCESS_TEAM_DOMAIN[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$REAL_CONF" 2>/dev/null | head -1)
     aud=$(sed -n 's/^[[:space:]]*ACCESS_AUD[[:space:]]*=[[:space:]]*"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$REAL_CONF" 2>/dev/null | head -1)
     if [ -z "$team" ] || [ -z "$aud" ]; then
       cat >&2 <<'WHY'
---expose needs Cloudflare Access configured, or every request arrives
-anonymous and the whole preview answers 401.
+--expose --as access needs Cloudflare Access configured, or every request
+arrives anonymous and the whole preview answers 401.
 
-Add these two lines to /etc/birdnet/birdnet.conf first:
+    ./avian/scripts/access-setup.sh discover https://ghlyms.com
+    sudo ./avian/scripts/access-setup.sh install <team-domain> <aud>
 
-    ACCESS_TEAM_DOMAIN="yourteam.cloudflareaccess.com"
-    ACCESS_AUD="<Application Audience tag from the Access app>"
+Or drop the --as and use the station admin password instead, which needs
+nothing set up:
 
-Adding them is safe on its own: nothing running today reads either key.
+    ./avian/scripts/preview.sh --expose
 WHY
       exit 78
     fi
     printf 'ACCESS_TEAM_DOMAIN="%s"\nACCESS_AUD="%s"\n' "$team" "$aud" >>"$BASE/birdnet.conf"
-
-    # Belt and braces. Every mutating endpoint already guards itself with
-    # the admin password, and the gate is on - but a preview reachable
-    # from the internet should not even offer them a door to knock on.
-    grep -E '^(birdnet-api|submissions|wiki|recording|spectrogram|cutout|menu)\.php$' \
-      "$BASE/api-allowlist" >"$BASE/api-allowlist.narrow"
-    mv "$BASE/api-allowlist.narrow" "$BASE/api-allowlist"
-
     unset AV_REQUIRE_AUTH
     WHO="whoever Cloudflare Access lets through to $team"
     ;;
-  *) echo "--as takes admin or access" >&2; exit 64 ;;
+  *) echo "--as takes admin, password or access" >&2; exit 64 ;;
 esac
 
 if [ "$SEED" = 1 ]; then

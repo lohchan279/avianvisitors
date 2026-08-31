@@ -89,7 +89,15 @@ $BEGIN
 # preview server it points at is a throwaway on localhost.
 redir /preview /preview/
 handle_path /preview/* {
-	reverse_proxy 127.0.0.1:$PORT
+	reverse_proxy 127.0.0.1:$PORT {
+		# The admin session cookie is scoped to /avian/, so under this
+		# prefix the browser would set it and then never send it back -
+		# unlocking would appear to work and silently not. Move it to
+		# where the preview actually lives. This also keeps the two
+		# sessions apart: same cookie name, different paths, so signing
+		# in to the preview cannot log you out of the real site.
+		header_down Set-Cookie "Path=/avian/" "Path=/preview/avian/"
+	}
 }
 $END
 EOF
