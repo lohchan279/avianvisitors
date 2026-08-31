@@ -53,6 +53,12 @@ KEEP=0
 #            on my Access policy record without the admin password".
 #            With --expose it uses the station's real Access settings, so
 #            a genuine assertion from the edge verifies.
+# open     - no gate. Allowed with --expose only because --expose narrows
+#            the API to endpoints that cannot change the station, so what
+#            is reachable is a copy of the database and some read-only
+#            views - and Cloudflare Access still decides who gets that
+#            far. Use it when the password gate is in the way of simply
+#            looking at something.
 AS=admin
 AS_GIVEN=0
 # Exposing the preview through the tunnel is a different risk from running
@@ -66,7 +72,7 @@ while [ "$#" -gt 0 ]; do
     --db)    DB_SOURCE="${2:?--db needs a path}"; shift 2 ;;
     --seed)  SEED=1; shift ;;
     --keep)  KEEP=1; shift ;;
-    --as)    AS="${2:?--as needs admin, password or access}"; AS_GIVEN=1; shift 2 ;;
+    --as)    AS="${2:?--as needs admin, password, access or open}"; AS_GIVEN=1; shift 2 ;;
     --expose) EXPOSE=1; shift ;;
     -h|--help) sed -n '2,/^set -/p' "${BASH_SOURCE[0]}" | sed '$d;s/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
@@ -320,7 +326,15 @@ WHY
     unset AV_REQUIRE_AUTH
     WHO="whoever Cloudflare Access lets through to $team"
     ;;
-  *) echo "--as takes admin, password or access" >&2; exit 64 ;;
+  open)
+    if [ "$EXPOSE" != 1 ]; then
+      echo "--as open is for --expose; on localhost use --as admin" >&2
+      exit 64
+    fi
+    export AV_REQUIRE_AUTH=0
+    WHO="anyone Cloudflare Access lets through - NO station password"
+    ;;
+  *) echo "--as takes admin, password, access or open" >&2; exit 64 ;;
 esac
 
 if [ "$SEED" = 1 ]; then

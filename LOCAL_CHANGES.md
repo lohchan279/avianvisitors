@@ -379,6 +379,26 @@ keeping live audio alive on the public host. It backs the overlay up,
 validates the config before reloading, and rolls back if validation fails.
 A test asserts the add/remove round trip is byte-identical.
 
+`install` writes that block **once**, so a block left behind by an older
+checkout keeps serving the old rules and nothing says so. The block
+carries a version now, and `status` reports a mismatch and tells you to
+re-run `install`.
+
+When unlocking appears to work and the API still answers 401, ask the
+preview what it actually received:
+
+    https://ghlyms.com/preview/__preview
+
+It reports whether the admin session cookie reached it at all — names
+only, never values — which is the whole question, and does not involve
+finding devtools on a phone.
+
+`--as open` is the way out if the gate is simply in the way: no password,
+relying on the narrowed allowlist (nothing reachable can change the
+station) and on Cloudflare Access deciding who gets that far. It is
+refused without `--expose`, where `--as admin` is the localhost
+equivalent.
+
 ### Preview overrides
 
 Four environment variables redirect paths, and **every one is read behind

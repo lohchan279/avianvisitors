@@ -48,6 +48,22 @@ function refuse(string $why): never {
     exit("404 - $why\n");
 }
 
+/* One diagnostic, because the alternative is asking somebody to find
+ * devtools on a phone. Reports whether the admin session cookie reached
+ * the preview at all - which is the whole question when unlocking appears
+ * to work and the API still answers 401. Names only, never values. */
+if ($path === '/__preview') {
+    header('Content-Type: text/plain; charset=utf-8');
+    $names = array_keys($_COOKIE);
+    sort($names);
+    echo "preview is answering\n";
+    echo 'cookies it received: ' . ($names ? implode(', ', $names) : '(none)') . "\n";
+    echo 'admin session cookie: '
+        . (isset($_COOKIE['avian_admin']) ? "yes\n" : "NO - this is why the API says unauthorized\n");
+    echo 'password gate: ' . (getenv('AV_REQUIRE_AUTH') === '0' ? "off\n" : "on\n");
+    exit;
+}
+
 if ($path === '/' || $path === '/index.html') {
     require "$root/index.html";
     exit;

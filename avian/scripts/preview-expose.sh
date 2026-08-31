@@ -28,6 +28,11 @@ set -uo pipefail
 OVERLAY=/etc/caddy/avian-site-overlay.caddy
 BEGIN='# >>> avian preview (temporary)'
 END='# <<< avian preview'
+# Bumped whenever the block below changes. install writes it; status
+# compares it, so a block left over from an older checkout is reported
+# rather than quietly serving the old rules - which is invisible
+# otherwise, since install only ever writes the block once.
+BLOCK_VERSION=2
 ACTION="${1:-status}"
 PORT="${2:-8080}"
 
@@ -37,6 +42,34 @@ if [ "$ACTION" != status ] && [ "$(id -u)" != 0 ]; then
 fi
 
 have_block() { [ -r "$OVERLAY" ] && grep -qF "$BEGIN" "$OVERLAY"; }
+
+# The whole block, in one place, so install and status cannot disagree.
+block_text() {
+  cat <<EOF
+$BEGIN v$BLOCK_VERSION
+# Added by avian/scripts/preview-expose.sh. Safe to delete by hand; the
+# preview server it points at is a throwaway on localhost.
+redir /preview /preview/
+handle_path /preview/* {
+	reverse_proxy 127.0.0.1:$1 {
+		# The admin session cookie is scoped to /avian/, so under this
+		# prefix the browser would set it and then never send it back -
+		# unlocking would appear to work and silently not. Move it to
+		# where the preview actually lives. This also keeps the two
+		# sessions apart: same cookie name, different paths, so signing
+		# in to the preview cannot log you out of the real site.
+		header_down Set-Cookie "Path=/avian/" "Path=/preview/avian/"
+	}
+}
+$END
+EOF
+}
+
+installed_version() {
+  [ -r "$OVERLAY" ] || return 1
+  sed -n "s/^$(printf '%s' "$BEGIN" | sed 's/[]\/$*.^[]/\\&/g') v\([0-9]*\)$/\1/p" \
+    "$OVERLAY" | head -1
+}
 
 strip_block() {
   # Delete our delimited block and nothing else. Everything outside the
@@ -61,6 +94,13 @@ reload() {
 case "$ACTION" in
   status)
     if have_block; then
+      have=$(installed_version)
+      if [ "${have:-0}" != "$BLOCK_VERSION" ]; then
+        echo "the published block is from an older version of this script"
+        echo "  installed: v${have:-1}   current: v$BLOCK_VERSION"
+        echo "  re-run:    sudo $0 install <port>"
+        echo
+      fi
       echo "published:"
       sed -n "/$(printf '%s' "$BEGIN" | sed 's/[]\/$*.^[]/\\&/g')/,/$(printf '%s' "$END" | sed 's/[]\/$*.^[]/\\&/g')/p" "$OVERLAY"
     else
@@ -83,24 +123,7 @@ case "$ACTION" in
 
     tmp="$(mktemp)"
     { [ -r "$OVERLAY" ] && strip_block "$OVERLAY"; } >"$tmp"
-    cat >>"$tmp" <<EOF
-$BEGIN
-# Added by avian/scripts/preview-expose.sh. Safe to delete by hand; the
-# preview server it points at is a throwaway on localhost.
-redir /preview /preview/
-handle_path /preview/* {
-	reverse_proxy 127.0.0.1:$PORT {
-		# The admin session cookie is scoped to /avian/, so under this
-		# prefix the browser would set it and then never send it back -
-		# unlocking would appear to work and silently not. Move it to
-		# where the preview actually lives. This also keeps the two
-		# sessions apart: same cookie name, different paths, so signing
-		# in to the preview cannot log you out of the real site.
-		header_down Set-Cookie "Path=/avian/" "Path=/preview/avian/"
-	}
-}
-$END
-EOF
+    block_text "$PORT" >>"$tmp"
 
     install -o root -g caddy -m 0640 "$tmp" "$OVERLAY"
     rm -f "$tmp"
