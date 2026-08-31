@@ -462,6 +462,62 @@ class FieldRecordingTests(unittest.TestCase):
             )
             self.assertEqual(65, result.returncode, result.stdout)
 
+    # ---- going live ---------------------------------------------------
+    def test_go_live_checks_the_served_site_not_the_checkout(self):
+        # Reading files off disk would agree with itself and prove
+        # nothing. These are the two failures that actually happened: a
+        # file never linked into the webroot, and a cache token that never
+        # moved after a pull.
+        import http.server
+        import socketserver
+        import threading
+
+        index = (b'<!doctype html><link rel="stylesheet" href="./styles.css?v=r9">'
+                 b'<button type="button" data-i="3">map</button>')
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                path = self.path.split("?")[0]
+                if path == "/":
+                    body, status = index, 200
+                elif path in ("/field.js", "/field.css"):
+                    body, status = b"ok", 200
+                elif path == "/avian/api/submissions.php":
+                    body, status = b'{"ok":false}', 401
+                else:
+                    # sg-map.js was never linked; sg-areas.php must 404 too.
+                    body, status = b"404", 404
+                self.send_response(status)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        socketserver.TCPServer.allow_reuse_address = True
+        server = socketserver.TCPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        site = "http://127.0.0.1:%d" % server.server_address[1]
+        try:
+            result = subprocess.run(
+                ["bash", "avian/scripts/go-live.sh"],
+                cwd=ROOT, env=dict(os.environ, AV_SITE=site),
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                timeout=120, check=False,
+            )
+        finally:
+            server.shutdown()
+
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertRegex(result.stdout, r"the cache token matches the checkout\s+NO")
+        self.assertRegex(result.stdout, r"/sg-map\.js is served\s+NO")
+        # A guarded endpoint is routed; only a 404 means the allowlist is
+        # stale, so 401 has to read as a pass.
+        self.assertRegex(result.stdout, r"the submissions endpoint is routed\s+ok")
+
     @unittest.skipUnless(shutil.which("php"), "PHP CLI is unavailable")
     def test_php_access_and_place_suite(self):
         result = subprocess.run(

@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+# Put the current checkout live, and prove it actually landed.
+#
+#   ./avian/scripts/go-live.sh              # check only, changes nothing
+#   sudo ./avian/scripts/go-live.sh --apply # link, bump, then check
+#
+# Deploying this fork is four steps and every one of them has failed
+# quietly at least once:
+#
+#   - a pull swaps the live frontend the instant it finishes, because the
+#     webroot is symlinks into the checkout - there is no release step;
+#   - a file new to the manifest is not linked, so it 404s on the site
+#     while working perfectly from the checkout;
+#   - the cache token has to move, or browsers keep the old scripts;
+#   - the worker is a service, and nothing scores a field recording until
+#     it is installed.
+#
+# So this checks the *served* site rather than the repository. Reading
+# files off disk would agree with itself and tell you nothing.
+set -uo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SITE=${AV_SITE:-http://localhost}
+APPLY=0
+FAILED=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --apply) APPLY=1; shift ;;
+    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown option: $1" >&2; exit 64 ;;
+  esac
+done
+
+say()  { printf '  %-46s %s\n' "$1" "$2"; }
+good() { say "$1" "ok${2:+  $2}"; }
+bad()  { say "$1" "NO   $2"; FAILED=$((FAILED + 1)); }
+
+code() { curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$SITE$1"; }
+body() { curl -s --max-time 8 "$SITE$1"; }
+
+# ---- apply ------------------------------------------------------------
+if [ "$APPLY" = 1 ]; then
+  [ "$(id -u)" = 0 ] || { echo "--apply needs sudo" >&2; exit 1; }
+  owner=$(stat -c '%U' "$REPO")
+
+  echo "publishing the webroot manifest"
+  "$REPO/scripts/link_webroot.sh" || { echo "link_webroot failed" >&2; exit 1; }
+
+  # The token must move or browsers keep the old apt.js. Run it as the
+  # repo owner so the high-water file does not end up owned by root.
+  echo "bumping the cache token"
+  sudo -u "$owner" "$REPO/avian/scripts/bump_version.sh" | sed 's/^/  /'
+  echo
+fi
+
+echo "checking $SITE"
+
+# ---- the frontend -----------------------------------------------------
+index=$(body /)
+if [ -z "$index" ]; then
+  bad "the site answers" "nothing came back from $SITE"
+else
+  good "the site answers"
+  case "$index" in
+    *'data-i="3">map'*) good "the Map tab is published" ;;
+    *) bad "the Map tab is published" "index.html has no map button" ;;
+  esac
+
+  # The token the site serves against the token in the checkout. These
+  # differ when a pull landed but nothing bumped, which browsers then
+  # paper over with a cached apt.js.
+  served=$(printf '%s' "$index" | grep -oE '\?v=r[0-9]+' | head -1)
+  ondisk=$(grep -oE '\?v=r[0-9]+' "$REPO/avian/frontend/index.html" | head -1)
+  if [ -n "$served" ] && [ "$served" = "$ondisk" ]; then
+    good "the cache token matches the checkout" "${served#\?v=}"
+  else
+    bad "the cache token matches the checkout" "served ${served:-none}, checkout ${ondisk:-none}"
+  fi
+fi
+
+for asset in /field.js /field.css /sg-map.js; do
+  status=$(code "$asset")
+  if [ "$status" = 200 ]; then
+    good "$asset is served"
+  else
+    bad "$asset is served" "$status - add it to the manifest in scripts/link_webroot.sh, then --apply"
+  fi
+done
+
+if body /sg-map.js | grep -q 'AVIAN_SG_MAP'; then
+  good "the map data is the real thing"
+else
+  bad "the map data is the real thing" "sg-map.js does not define AVIAN_SG_MAP"
+fi
+
+# ---- the API ----------------------------------------------------------
+# 401 is a pass: it proves the endpoint is routed and guarded. 404 is the
+# failure, and it means the Caddy allowlist has not been regenerated.
+status=$(code "/avian/api/submissions.php?action=list")
+case "$status" in
+  200|401) good "the submissions endpoint is routed" "$status" ;;
+  404) bad "the submissions endpoint is routed" "404 - run sudo /usr/local/sbin/avian-caddy-refresh" ;;
+  *)   bad "the submissions endpoint is routed" "$status" ;;
+esac
+
+status=$(code /avian/api/sg-areas.php)
+if [ "$status" = 404 ]; then
+  good "the boundary data stays server-side" "404"
+else
+  bad "the boundary data stays server-side" "$status - it should not be reachable at all"
+fi
+
+# ---- the worker -------------------------------------------------------
+if systemctl list-unit-files 2>/dev/null | grep -q '^submission_worker\.service'; then
+  if systemctl is-active --quiet submission_worker; then
+    good "the field-recording worker is running"
+  else
+    bad "the field-recording worker is running" \
+      "installed but not active - sudo systemctl start submission_worker"
+  fi
+else
+  bad "the field-recording worker is running" \
+    "not installed - sudo $REPO/scripts/install_submission_worker.sh"
+fi
+
+# ---- who may record ---------------------------------------------------
+if "$REPO/avian/scripts/access-setup.sh" check >/dev/null 2>&1; then
+  good "Cloudflare Access identities may record"
+else
+  say "Cloudflare Access identities may record" \
+    "off - only the admin password works; $REPO/avian/scripts/access-setup.sh discover $SITE"
+fi
+
+# ---- leftovers --------------------------------------------------------
+if [ -r /etc/caddy/avian-site-overlay.caddy ] \
+  && grep -q 'avian preview' /etc/caddy/avian-site-overlay.caddy; then
+  say "no preview left published" \
+    "still up - sudo $REPO/avian/scripts/preview-expose.sh remove"
+fi
+
+echo
+if [ "$FAILED" = 0 ]; then
+  echo "live. Purge the Cloudflare cache for the public site so visitors get"
+  echo "the new token rather than a cached index.html."
+else
+  echo "$FAILED check(s) failed; each line above says what to run."
+  exit 1
+fi

@@ -226,6 +226,35 @@ comments.
 
 ---
 
+## Going live
+
+```bash
+sudo ./avian/scripts/go-live.sh --apply
+sudo ./scripts/install_submission_worker.sh      # once, for field recordings
+./avian/scripts/access-setup.sh discover https://ghlyms.com
+```
+
+`go-live.sh` links the webroot, bumps the cache token and then checks the
+**served** site rather than the checkout — reading files off disk would
+agree with itself and prove nothing. It fails on the two things that
+actually go wrong: a file never linked into the webroot, and a token that
+never moved after a pull. Without `--apply` it changes nothing and just
+reports.
+
+It treats a 401 from `submissions.php` as a pass. That proves the endpoint
+is routed and guarded; only a 404 means the Caddy allowlist is stale.
+
+**Access is what makes the Map tab useful to anyone but the owner.**
+Without `ACCESS_TEAM_DOMAIN`/`ACCESS_AUD`, `submissions.php` accepts only
+the admin password, so every other visitor sees "unlock with the station
+admin password" where the catches should be. With it, everyone on the
+Access policy reads the map and records, which is the point.
+
+Finally, purge the Cloudflare cache for the public site. The token change
+is invisible to anyone holding a cached `index.html`.
+
+---
+
 ## Updating the Pi
 
 `git pull` on the station will usually refuse the first time:
