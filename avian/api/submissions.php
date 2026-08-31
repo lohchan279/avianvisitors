@@ -43,6 +43,7 @@ header('Cache-Control: no-store');
 require_once __DIR__ . '/admin-auth.php';
 require_once __DIR__ . '/access-auth.php';
 require_once __DIR__ . '/places.php';
+require_once __DIR__ . '/submissions-schema.php';
 
 $identity = avian_require_admin_or_access();
 
@@ -98,32 +99,11 @@ function db(string $path): PDO {
     // WAL keeps a submission write from blocking the analyser's own writes.
     $pdo->exec('PRAGMA journal_mode=WAL');
     $pdo->exec('PRAGMA busy_timeout=5000');
-    $pdo->exec('CREATE TABLE IF NOT EXISTS submissions (
-        Id          INTEGER PRIMARY KEY AUTOINCREMENT,
-        Created     TEXT NOT NULL,
-        Status      TEXT NOT NULL,
-        Sci_Name    TEXT,
-        Com_Name    TEXT,
-        Confidence  REAL,
-        Candidates  TEXT,
-        Lat         REAL,
-        Lon         REAL,
-        Accuracy    REAL,
-        Audio       TEXT NOT NULL,
-        Submitter   TEXT,
-        Error       TEXT
-    )');
-    // Place/Area arrived after the first stations were already running, so
-    // add them to an existing table rather than requiring a wipe.
-    $have = [];
-    foreach ($pdo->query('PRAGMA table_info(submissions)') as $column) {
-        $have[(string)$column['name']] = true;
-    }
-    foreach (['Place' => 'TEXT', 'Area' => 'TEXT'] as $column => $type) {
-        if (!isset($have[$column])) $pdo->exec("ALTER TABLE submissions ADD COLUMN $column $type");
-    }
-    $pdo->exec('CREATE INDEX IF NOT EXISTS submissions_status ON submissions (Status)');
-    $pdo->exec('CREATE INDEX IF NOT EXISTS submissions_created ON submissions (Created DESC)');
+    avian_submissions_schema(
+        $pdo,
+        num_or_null(conf_value($GLOBALS['CONF'], 'LATITUDE', ''), -90, 90),
+        num_or_null(conf_value($GLOBALS['CONF'], 'LONGITUDE', ''), -180, 180)
+    );
     return $pdo;
 }
 

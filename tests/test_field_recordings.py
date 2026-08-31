@@ -242,6 +242,62 @@ class FieldRecordingTests(unittest.TestCase):
             ).stdout
             self.assertEqual(original, removed, "removing the block changed the overlay")
 
+    # ---- the schema -------------------------------------------------
+    @unittest.skipUnless(shutil.which("php"), "PHP CLI is unavailable")
+    def test_seeding_migrates_a_database_from_before_the_place_columns(self):
+        # CREATE TABLE IF NOT EXISTS does nothing to a table that already
+        # exists, so a copy of a real birds.db kept the old schema and
+        # seeding died on "no column named Place". The schema lives in one
+        # place now; this is the case that caught the drift.
+        import sqlite3
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            database = pathlib.Path(tmp) / "old.db"
+            root = pathlib.Path(tmp) / "root"
+            root.mkdir()
+
+            with sqlite3.connect(database) as db:
+                db.execute("""CREATE TABLE submissions (
+                    Id INTEGER PRIMARY KEY AUTOINCREMENT, Created TEXT NOT NULL,
+                    Status TEXT NOT NULL, Sci_Name TEXT, Com_Name TEXT,
+                    Confidence REAL, Candidates TEXT, Lat REAL, Lon REAL,
+                    Accuracy REAL, Audio TEXT NOT NULL, Submitter TEXT, Error TEXT)""")
+                db.execute(
+                    "INSERT INTO submissions (Created, Status, Sci_Name, Com_Name,"
+                    " Confidence, Lat, Lon, Audio) VALUES (?,?,?,?,?,?,?,?)",
+                    ("2026-08-20T09:00:00+00:00", "confirmed", "Cinnyris jugularis",
+                     "Olive-backed Sunbird", 0.8, 1.3430, 103.8280,
+                     "Submissions/old/x.webm"),
+                )
+
+            seeded = subprocess.run(
+                ["php", str(ROOT / "avian/scripts/preview-seed.php"),
+                 str(database), str(root)],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                timeout=120, check=False,
+            )
+            self.assertEqual(0, seeded.returncode, seeded.stdout)
+
+            with sqlite3.connect(database) as db:
+                columns = {row[1] for row in db.execute("PRAGMA table_info(submissions)")}
+                self.assertIn("Place", columns)
+                self.assertIn("Area", columns)
+                # The row written before the columns existed gets a name,
+                # rather than sitting blank on the map forever.
+                place, area = db.execute(
+                    "SELECT Place, Area FROM submissions WHERE Audio = ?",
+                    ("Submissions/old/x.webm",),
+                ).fetchone()
+            self.assertEqual("Central Water Catchment", place)
+            self.assertEqual("Central Water Catchment", area)
+
+    def test_the_submissions_schema_is_written_down_once(self):
+        # Two copies of a schema is how the migration got missed.
+        for relative in ("avian/api/submissions.php", "avian/scripts/preview-seed.php"):
+            source = self.read(relative)
+            self.assertIn("avian_submissions_schema(", source, relative)
+            self.assertNotIn("CREATE TABLE IF NOT EXISTS submissions", source, relative)
+
     # ---- turning Access on -------------------------------------------
     @unittest.skipUnless(shutil.which("php"), "PHP CLI is unavailable")
     def test_access_setup_preserves_the_rest_of_birdnet_conf(self):

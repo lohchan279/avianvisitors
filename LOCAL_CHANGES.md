@@ -58,6 +58,7 @@ upstream file.
 | `scripts/filter_test.sh`, `scripts/score_file.py` | A/B filters against the real model |
 | `avian/api/submissions.php` | field recordings: submit, poll, audio, reject, list |
 | `avian/api/places.php` | turns a coordinate into a planning-area name. The one place a fix becomes a name; nothing downstream sees the fix |
+| `avian/api/submissions-schema.php` | the submissions table and its migration, written down once. It was written down twice and the two drifted — `CREATE TABLE IF NOT EXISTS` is a no-op against an existing table, so a station that already had the table never got the `Place`/`Area` columns |
 | `avian/api/access-auth.php` | verifies the Cloudflare Access JWT (RS256, audience, issuer, expiry) so a whitelisted visitor can record without the admin password |
 | `avian/api/sg-areas.php` | GENERATED. The same boundaries as `sg-map.js`, for naming a fix server-side. Deliberately **not** in the Caddy allowlist, so it is never reachable as a URL |
 | `avian/frontend/sg-map.js` | GENERATED. Singapore's 55 planning areas, ~50 KB. Lazy-loaded by `field.js` on first sight of the Map view, so a visit that never opens it pays nothing |

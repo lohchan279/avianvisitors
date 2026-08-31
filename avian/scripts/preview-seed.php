@@ -16,6 +16,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/../api/places.php';
+require_once __DIR__ . '/../api/submissions-schema.php';
 
 [$self, $dbPath, $extracted] = $argv + [null, null, null];
 if (!$dbPath || !$extracted) {
@@ -56,10 +57,9 @@ function tone(string $path, float $seconds = 2.0, int $hz = 2200): void {
 }
 
 $pdo = new PDO('sqlite:' . $dbPath, null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-$pdo->exec('CREATE TABLE IF NOT EXISTS submissions (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT, Created TEXT NOT NULL, Status TEXT NOT NULL,
-    Sci_Name TEXT, Com_Name TEXT, Confidence REAL, Candidates TEXT, Lat REAL, Lon REAL,
-    Accuracy REAL, Audio TEXT NOT NULL, Submitter TEXT, Error TEXT, Place TEXT, Area TEXT)');
+// The same schema the API uses, migration and all - a copy of a real
+// birds.db already has this table without the newer columns.
+avian_submissions_schema($pdo, $home[0], $home[1]);
 
 $day = gmdate('Y-m-d');
 $dir = "$extracted/Submissions/$day";
