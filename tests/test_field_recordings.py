@@ -13,6 +13,7 @@ source, not of a comment, so it is asserted against the source.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 import shutil
@@ -208,6 +209,60 @@ class FieldRecordingTests(unittest.TestCase):
                 text=True, stdout=subprocess.PIPE, check=True,
             ).stdout
             self.assertEqual(original, removed, "removing the block changed the overlay")
+
+    # ---- turning Access on -------------------------------------------
+    @unittest.skipUnless(shutil.which("php"), "PHP CLI is unavailable")
+    def test_access_setup_preserves_the_rest_of_birdnet_conf(self):
+        # birdnet.conf carries local keys nothing upstream knows about -
+        # LIVESTREAM_FILTER, EXTRACTION_FILTER. Losing one to a config
+        # edit would change how the station sounds, silently.
+        import tempfile
+        original = (
+            'SITE_NAME="ghlyms"\n'
+            "LATITUDE=1.3690\n"
+            'LIVESTREAM_FILTER="highpass=f=900"\n'
+            'EXTRACTION_FILTER="highpass 900"\n'
+        )
+        aud = "9f8c2b1e7d4a6053c1e8b2f7a94d6053c1e8b2f7a94d60539f8c2b1e7d4a6053"
+        with tempfile.TemporaryDirectory() as tmp:
+            conf = pathlib.Path(tmp) / "birdnet.conf"
+            conf.write_text(original, encoding="utf-8")
+            environment = dict(os.environ, AV_ACCESS_CONF=str(conf))
+            script = str(ROOT / "avian/scripts/access-setup.sh")
+
+            first = subprocess.run(
+                ["bash", script, "install", "team.cloudflareaccess.com", aud],
+                env=environment, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, timeout=60, check=False,
+            )
+            written = conf.read_text(encoding="utf-8")
+            self.assertIn("ACCESS_TEAM_DOMAIN=team.cloudflareaccess.com", written)
+            self.assertIn(f"ACCESS_AUD={aud}", written)
+            for line in original.splitlines():
+                self.assertIn(line, written, f"{line} was lost\n{first.stdout}")
+
+            # Setting it twice must update, not accumulate.
+            subprocess.run(
+                ["bash", script, "install", "team.cloudflareaccess.com", "b" * 64],
+                env=environment, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, timeout=60, check=False,
+            )
+            again = conf.read_text(encoding="utf-8")
+            self.assertEqual(1, again.count("ACCESS_TEAM_DOMAIN="))
+            self.assertEqual(1, again.count("ACCESS_AUD="))
+            self.assertIn("ACCESS_AUD=" + "b" * 64, again)
+
+    @unittest.skipUnless(shutil.which("php"), "PHP CLI is unavailable")
+    def test_access_setup_rejects_values_that_cannot_be_right(self):
+        script = str(ROOT / "avian/scripts/access-setup.sh")
+        for team, aud in (("not a domain", "a" * 64),
+                          ("team.cloudflareaccess.com", "short")):
+            result = subprocess.run(
+                ["bash", script, "install", team, aud],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                timeout=60, check=False,
+            )
+            self.assertEqual(65, result.returncode, result.stdout)
 
     @unittest.skipUnless(shutil.which("php"), "PHP CLI is unavailable")
     def test_php_access_and_place_suite(self):

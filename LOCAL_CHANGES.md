@@ -64,6 +64,7 @@ upstream file.
 | `avian/scripts/build_sg_map.py` | rebuilds both of the above from one geoBoundaries download |
 | `avian/scripts/preview.sh`, `preview-router.php`, `preview-seed.php` | run the whole site against throwaway data — see below |
 | `avian/scripts/preview-expose.sh` | publish a running preview at `ghlyms.com/preview/` and take it down again |
+| `avian/scripts/access-setup.sh` | find, install and check the two Cloudflare Access settings |
 | `avian/frontend/field.js`, `field.css` | the Map view: the district map, the recorder and the list of what has been caught. Self-mounting into an empty `#v3`, so the feature costs `apt.js` two lines and nothing else |
 | `scripts/submission_worker.py` | scores submitted clips with the station's own model |
 | `tests/test_field_recordings.py`, `tests/test_field_access_auth.php` | the view wiring, the coordinate promise, and every JWT forgery worth naming |
@@ -358,6 +359,28 @@ ACCESS_AUD="<Application Audience tag from the Access app>"
 ```
 
 With either missing, Access auth is simply off.
+
+Finding them without transcribing a 64-character hex string:
+
+```bash
+./avian/scripts/access-setup.sh read     # paste a CF_Authorization cookie
+sudo ./avian/scripts/access-setup.sh install <team-domain> <aud>
+./avian/scripts/access-setup.sh check    # fetches the team certificates
+```
+
+`read` decodes a token you already have — a browser signed in to the site
+holds one in its `CF_Authorization` cookie — and prints both values from
+its `iss` and `aud` claims. It takes the token on stdin, not as an
+argument, because an argument is visible to every process on the machine,
+and it never echoes it back. It does **not** verify the signature; that is
+`access-auth.php`'s job when it matters.
+
+`install` replaces in place if present and appends otherwise — the same
+shape as the station's own config writer, so `LIVESTREAM_FILTER` and
+`EXTRACTION_FILTER` survive. It backs the file up first. A test pins that.
+
+Saving settings from the web UI also preserves these keys:
+`admin_control.sh`'s writer prints through every line it is not replacing.
 
 **Rebuilding the map** after a boundary revision:
 

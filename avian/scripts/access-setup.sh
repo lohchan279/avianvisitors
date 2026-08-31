@@ -1,0 +1,171 @@
+#!/usr/bin/env bash
+# Find and install the two Cloudflare Access settings the field-recording
+# API needs, and check they work.
+#
+#   ./avian/scripts/access-setup.sh check      # what is configured now
+#   ./avian/scripts/access-setup.sh read       # read them off a real token
+#   sudo ./avian/scripts/access-setup.sh install <team-domain> <aud>
+#
+# The two values are:
+#
+#   ACCESS_TEAM_DOMAIN   yourteam.cloudflareaccess.com - whose signature to
+#                        trust. Zero Trust dashboard -> Settings -> Custom
+#                        Pages, or the host your login redirect passes
+#                        through.
+#   ACCESS_AUD           the Application Audience tag of the Access
+#                        application in front of this site. Zero Trust ->
+#                        Access -> Applications -> your app -> Overview.
+#                        A 64-character hex string.
+#
+# Both are needed. With either missing, Access authentication is simply
+# off and the API falls back to the station's admin password.
+#
+# The AUD tag matters more than it looks: it is what stops a valid token
+# for a *different* application in the same Access team from opening this
+# one. Copy it, do not guess it - which is what `read` is for.
+#
+# `read` takes a real assertion and tells you both values from it, so
+# there is nothing to transcribe. Get one from a browser already signed in
+# to the site: devtools -> Application -> Cookies -> CF_Authorization.
+# It is pasted on stdin rather than passed as an argument, because an
+# argument is visible to every process on the machine, and it is never
+# echoed back.
+set -uo pipefail
+
+CONF=${AV_ACCESS_CONF:-/etc/birdnet/birdnet.conf}
+ACTION="${1:-check}"
+
+command -v php >/dev/null || { echo "php is not installed" >&2; exit 1; }
+
+conf_value() {
+  [ -r "$CONF" ] || return 1
+  sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*$/\1/p" \
+    "$CONF" | head -1
+}
+
+valid_team() { [[ "$1" =~ ^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$ ]]; }
+valid_aud()  { [[ "$1" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; }
+
+case "$ACTION" in
+  read)
+    if [ -t 0 ]; then
+      echo "Paste the CF_Authorization cookie (or a Cf-Access-Jwt-Assertion"
+      echo "header value), then press enter:"
+    fi
+    IFS= read -r token
+    token=${token//[[:space:]]/}
+    token=${token#CF_Authorization=}
+    if [ "$(awk -F. '{print NF-1}' <<<"$token")" != 2 ]; then
+      echo "that does not look like a JWT (expected three dot-separated parts)" >&2
+      exit 65
+    fi
+
+    # Decode only. This deliberately does not verify the signature: the
+    # point here is to read the issuer and audience out of a token you
+    # already have, and avian/api/access-auth.php is what verifies one
+    # when it actually matters.
+    php -r '
+      $parts = explode(".", trim(stream_get_contents(STDIN)));
+      $pad = strtr($parts[1], "-_", "+/");
+      $pad .= str_repeat("=", (4 - strlen($pad) % 4) % 4);
+      $body = json_decode((string)base64_decode($pad, true), true);
+      if (!is_array($body)) { fwrite(STDERR, "could not decode the token\n"); exit(65); }
+      $iss = rtrim((string)($body["iss"] ?? ""), "/");
+      $team = preg_replace("#^https?://#", "", $iss);
+      $aud = $body["aud"] ?? [];
+      $aud = is_array($aud) ? ($aud[0] ?? "") : $aud;
+      $exp = (int)($body["exp"] ?? 0);
+      if ($team === "" || $aud === "") {
+        fwrite(STDERR, "the token carries no issuer or audience\n"); exit(65);
+      }
+      fwrite(STDERR, sprintf("signed in as %s, token %s\n",
+        $body["email"] ?? "(no email claim)",
+        $exp && $exp < time() ? "EXPIRED (fine - only iss and aud matter here)" : "current"));
+      printf("ACCESS_TEAM_DOMAIN=%s\nACCESS_AUD=%s\n", $team, $aud);
+    ' <<<"$token" || exit $?
+    token=''
+    echo >&2
+    echo "Install them with:" >&2
+    echo "  sudo $0 install <team-domain> <aud>" >&2
+    ;;
+
+  install)
+    team="${2:-}"; aud="${3:-}"
+    [ -n "$team" ] && [ -n "$aud" ] || {
+      echo "usage: sudo $0 install <team-domain> <aud>" >&2; exit 64; }
+    team=${team#https://}; team=${team%/}
+    valid_team "$team" || { echo "team domain looks wrong: $team" >&2; exit 65; }
+    valid_aud "$aud" || { echo "audience tag looks wrong: $aud" >&2; exit 65; }
+    [ -w "$CONF" ] || { echo "cannot write $CONF - run this with sudo" >&2; exit 1; }
+
+    backup="$CONF.before-access.$(date +%s)"
+    cp -p "$CONF" "$backup" || exit 1
+
+    # Replace in place if present, append otherwise - the same shape as
+    # the station's own config writer, so every other line is preserved
+    # byte for byte.
+    tmp=$(mktemp "$(dirname "$CONF")/.birdnet.conf.XXXXXX") || exit 1
+    awk -v team="$team" -v aud="$aud" '
+      /^[[:space:]]*ACCESS_TEAM_DOMAIN[[:space:]]*=/ { print "ACCESS_TEAM_DOMAIN=" team; t=1; next }
+      /^[[:space:]]*ACCESS_AUD[[:space:]]*=/         { print "ACCESS_AUD=" aud;         a=1; next }
+      { print }
+      END {
+        if (!t) print "ACCESS_TEAM_DOMAIN=" team
+        if (!a) print "ACCESS_AUD=" aud
+      }
+    ' "$CONF" >"$tmp" || { rm -f "$tmp"; exit 1; }
+
+    chown --reference="$CONF" "$tmp" 2>/dev/null
+    chmod --reference="$CONF" "$tmp" 2>/dev/null
+    mv "$tmp" "$CONF" || exit 1
+    echo "written to $CONF (backup: $backup)"
+    echo
+    exec "$0" check
+    ;;
+
+  check)
+    team=$(conf_value ACCESS_TEAM_DOMAIN)
+    aud=$(conf_value ACCESS_AUD)
+    if [ -z "$team" ] || [ -z "$aud" ]; then
+      echo "Access authentication: OFF"
+      echo "  ACCESS_TEAM_DOMAIN ${team:-(not set)}"
+      echo "  ACCESS_AUD         ${aud:+set}${aud:-(not set)}"
+      echo
+      echo "The API falls back to the station admin password. To turn it on:"
+      echo "  $0 read"
+      exit 1
+    fi
+    valid_team "$team" || { echo "ACCESS_TEAM_DOMAIN looks wrong: $team" >&2; exit 65; }
+    valid_aud "$aud"   || { echo "ACCESS_AUD looks wrong" >&2; exit 65; }
+
+    echo "ACCESS_TEAM_DOMAIN  $team"
+    echo "ACCESS_AUD          ${aud:0:8}...${aud: -4} (${#aud} chars)"
+
+    # The one thing that can be wrong without looking wrong: a team domain
+    # that does not publish certificates. Without them nothing verifies,
+    # and every request falls back to the password.
+    certs=$(curl -fsS --max-time 6 "https://$team/cdn-cgi/access/certs" 2>/dev/null)
+    if [ -z "$certs" ]; then
+      echo "signing certificates: UNREACHABLE at https://$team/cdn-cgi/access/certs"
+      echo "  check the team domain, or the station's internet access"
+      exit 1
+    fi
+    count=$(php -r '
+      $j = json_decode(stream_get_contents(STDIN), true);
+      echo is_array($j) ? count($j["public_certs"] ?? []) : 0;
+    ' <<<"$certs")
+    if [ "${count:-0}" -lt 1 ]; then
+      echo "signing certificates: none published at that team domain"
+      exit 1
+    fi
+    echo "signing certificates: $count fetched from $team"
+    echo
+    echo "Access authentication: ON"
+    echo "People on your Access policy can record without the admin password."
+    ;;
+
+  *)
+    echo "usage: $0 check | read | install <team-domain> <aud>" >&2
+    exit 64
+    ;;
+esac
