@@ -1,37 +1,50 @@
 <?php
 // AvianVisitors - field recordings submitted from a phone.
 //
-// A visitor records a few seconds wherever they are, the station's own
-// BirdNET scores it, and they confirm which candidate was actually the
-// bird before anything is kept. Confirmation is the point: a trusted
-// person looking at three candidates beats any confidence threshold, and
-// it keeps guesses out of the collage.
+// Somebody records a few seconds of a bird wherever they are, the
+// station's own BirdNET scores it, and the best answer is kept if the
+// model is confident enough to stand behind it. Nobody is asked to pick
+// from a list of Latin names: the person holding the phone almost never
+// knows which of five candidates it was, so asking them turns a lucky
+// guess into a recorded fact. Below the bar the station says it could not
+// make that one out, and the clip is discarded.
 //
 // Endpoints:
 //   POST ?action=submit   multipart: audio, optional lat/lon/accuracy
 //                         -> {id}. Row lands as 'pending'; the worker
 //                         (scripts/submission_worker.py) picks it up.
-//   GET  ?action=result&id=N -> {status, candidates:[{sci,com,conf}]}
-//   POST ?action=confirm  JSON {id, sci} -> keeps that identification.
-//                         sci must be one the analyser actually offered,
-//                         so a client cannot invent a species.
-//   POST ?action=reject   JSON {id} -> discards it, audio and all.
-//   GET  ?action=list&limit=N -> confirmed submissions, newest first.
+//   GET  ?action=result&id=N -> {status, sci, com, conf, place}
+//                         status is confirmed | unsure | pending |
+//                         analysing | failed | rejected. A pure read.
+//   GET  ?action=audio&id=N  -> the clip itself, range-aware.
+//   POST ?action=reject   JSON {id} -> discards it, audio and all. This
+//                         is the "that was not it" button.
+//   GET  ?action=list&limit=N -> confirmed submissions, newest first,
+//                         plus per-area totals for the map.
 //
 // Submissions live in their own table, deliberately not in `detections`:
 // the collage, stats and the BirdWeather export all read that table, and
 // nothing that reads it should have to learn about a second provenance.
 //
-// Auth is the station's: direct private-address requests are open unless
-// the owner enables the LAN admin gate; forwarded and public-host
-// requests always need the password.
+// Coordinates go in and never come out. The database stores the fix
+// because the model needs it - the occurrence filter judges a clip by
+// where it was heard - but submit resolves it to a planning-area name
+// once, on the way in, and every response afterwards speaks in names.
+//
+// Auth: an identity Cloudflare Access has already vouched for is enough,
+// so the people on the Access policy can record without being handed the
+// station's admin password. Failing that, the station's ordinary admin
+// rules apply.
 
 declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store');
 
 require_once __DIR__ . '/admin-auth.php';
-avian_require_admin();
+require_once __DIR__ . '/access-auth.php';
+require_once __DIR__ . '/places.php';
+
+$identity = avian_require_admin_or_access();
 
 $BIRDNETPI_DIR = dirname(__DIR__, 2);
 $DB_PATH = "$BIRDNETPI_DIR/scripts/birds.db";
@@ -39,7 +52,6 @@ $CONF    = '/etc/birdnet/birdnet.conf';
 
 const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;   // ~8 MB; 15s of phone audio is ~250 KB
 const MAX_PENDING      = 20;                // backlog guard, not a rate limit
-const KEEP_CANDIDATES  = 5;
 
 /** Read one value from birdnet.conf, tolerating the quoted PHP-ish format. */
 function conf_value(string $conf, string $key, string $fallback = ''): string {
@@ -86,6 +98,15 @@ function db(string $path): PDO {
         Submitter   TEXT,
         Error       TEXT
     )');
+    // Place/Area arrived after the first stations were already running, so
+    // add them to an existing table rather than requiring a wipe.
+    $have = [];
+    foreach ($pdo->query('PRAGMA table_info(submissions)') as $column) {
+        $have[(string)$column['name']] = true;
+    }
+    foreach (['Place' => 'TEXT', 'Area' => 'TEXT'] as $column => $type) {
+        if (!isset($have[$column])) $pdo->exec("ALTER TABLE submissions ADD COLUMN $column $type");
+    }
     $pdo->exec('CREATE INDEX IF NOT EXISTS submissions_status ON submissions (Status)');
     $pdo->exec('CREATE INDEX IF NOT EXISTS submissions_created ON submissions (Created DESC)');
     return $pdo;
@@ -106,8 +127,31 @@ function num_or_null($v, float $min, float $max): ?float {
     return $f;
 }
 
+/** Delete a submission's audio, refusing to follow a path out of the tree. */
+function drop_audio(string $extracted, string $relative): void {
+    $real = realpath($extracted . '/' . $relative);
+    $base = realpath($extracted . '/Submissions');
+    if ($real !== false && $base !== false && str_starts_with($real, $base . '/')) {
+        @unlink($real);
+    }
+}
+
+/**
+ * How a submitter is shown. An Access identity is an email address, and
+ * the whole address is more than a caption needs - the part before the @
+ * is who it was.
+ */
+function display_submitter(?string $stored): ?string {
+    $stored = trim((string)$stored);
+    if ($stored === '') return null;
+    $at = strpos($stored, '@');
+    return $at === false ? $stored : substr($stored, 0, $at);
+}
+
 $action = (string)($_GET['action'] ?? '');
 $pdo = db($DB_PATH);
+$EXTRACTED = conf_value($CONF, 'EXTRACTED',
+    (getenv('HOME') ?: '/home/pi') . '/BirdSongs/Extracted');
 
 // ---------------------------------------------------------------- submit
 if ($action === 'submit') {
@@ -121,7 +165,7 @@ if ($action === 'submit') {
     if ($file['size'] > MAX_UPLOAD_BYTES) fail('recording too large', 413);
     if (!is_uploaded_file($file['tmp_name'])) fail('bad upload');
 
-    $pending = (int)$pdo->query("SELECT COUNT(*) FROM submissions WHERE Status = 'pending'")
+    $pending = (int)$pdo->query("SELECT COUNT(*) FROM submissions WHERE Status IN ('pending','analysing')")
         ->fetchColumn();
     if ($pending >= MAX_PENDING) fail('too many recordings still being analysed', 429);
 
@@ -141,9 +185,8 @@ if ($action === 'submit') {
     };
     if ($ext === null) fail('unsupported audio type: ' . ($mime ?: 'unknown'));
 
-    $extracted = conf_value($CONF, 'EXTRACTED', (getenv('HOME') ?: '/home/pi') . '/BirdSongs/Extracted');
     $day = gmdate('Y-m-d');
-    $dir = "$extracted/Submissions/$day";
+    $dir = "$EXTRACTED/Submissions/$day";
     if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
         fail('could not create the submissions directory', 500);
     }
@@ -157,20 +200,39 @@ if ($action === 'submit') {
     if (!move_uploaded_file($file['tmp_name'], $dest)) fail('could not store the recording', 500);
     @chmod($dest, 0644);
 
+    $lat = num_or_null($_POST['lat'] ?? null, -90, 90);
+    $lon = num_or_null($_POST['lon'] ?? null, -180, 180);
+    // The one moment a coordinate becomes a name. After this row is
+    // written the position is only ever read by the worker, which needs
+    // it for the occurrence filter and nothing else.
+    $named = avian_place_for(
+        $lat, $lon,
+        num_or_null(conf_value($CONF, 'LATITUDE', ''), -90, 90),
+        num_or_null(conf_value($CONF, 'LONGITUDE', ''), -180, 180)
+    );
+
+    // A verified Access identity is the honest answer to "who recorded
+    // this", and it cannot be typed in by the client.
+    $who = $identity['email'] ?? '';
+    if ($who === '') $who = mb_substr(trim((string)($_POST['submitter'] ?? '')), 0, 60);
+
     $stmt = $pdo->prepare('INSERT INTO submissions
-        (Created, Status, Lat, Lon, Accuracy, Audio, Submitter)
-        VALUES (:created, :status, :lat, :lon, :acc, :audio, :who)');
+        (Created, Status, Lat, Lon, Accuracy, Audio, Submitter, Place, Area)
+        VALUES (:created, :status, :lat, :lon, :acc, :audio, :who, :place, :area)');
     $stmt->execute([
         ':created' => gmdate('c'),
         ':status'  => 'pending',
-        ':lat'     => num_or_null($_POST['lat'] ?? null, -90, 90),
-        ':lon'     => num_or_null($_POST['lon'] ?? null, -180, 180),
+        ':lat'     => $lat,
+        ':lon'     => $lon,
         ':acc'     => num_or_null($_POST['accuracy'] ?? null, 0, 100000),
         ':audio'   => "Submissions/$day/$name",
-        ':who'     => mb_substr(trim((string)($_POST['submitter'] ?? '')), 0, 40) ?: null,
+        ':who'     => $who !== '' ? $who : null,
+        ':place'   => $named['place'],
+        ':area'    => $named['area'],
     ]);
 
-    echo json_encode(['ok' => true, 'id' => (int)$pdo->lastInsertId(), 'status' => 'pending']);
+    echo json_encode(['ok' => true, 'id' => (int)$pdo->lastInsertId(), 'status' => 'pending',
+                      'place' => $named['place']]);
     exit;
 }
 
@@ -178,65 +240,95 @@ if ($action === 'submit') {
 if ($action === 'result') {
     $id = (int)($_GET['id'] ?? 0);
     if ($id <= 0) fail('bad id');
-    $stmt = $pdo->prepare('SELECT Id, Status, Candidates, Audio, Error, Sci_Name, Com_Name
+    $stmt = $pdo->prepare('SELECT Id, Status, Audio, Error, Sci_Name, Com_Name,
+                                  Confidence, Place
                            FROM submissions WHERE Id = :id');
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) fail('no such submission', 404);
 
-    $candidates = [];
-    if (!empty($row['Candidates'])) {
-        $decoded = json_decode((string)$row['Candidates'], true);
-        if (is_array($decoded)) $candidates = array_slice($decoded, 0, KEEP_CANDIDATES);
-    }
     echo json_encode([
-        'ok'         => true,
-        'id'         => (int)$row['Id'],
-        'status'     => $row['Status'],
-        'candidates' => $candidates,
-        'audio'      => $row['Audio'],
-        'sci'        => $row['Sci_Name'],
-        'com'        => $row['Com_Name'],
-        'error'      => $row['Error'],
+        'ok'     => true,
+        'id'     => (int)$row['Id'],
+        'status' => $row['Status'],
+        'sci'    => $row['Sci_Name'],
+        'com'    => $row['Com_Name'],
+        'conf'   => $row['Confidence'] === null ? null : round((float)$row['Confidence'], 3),
+        'place'  => $row['Place'],
+        'error'  => $row['Error'],
     ]);
     exit;
 }
 
-// --------------------------------------------------------------- confirm
-if ($action === 'confirm') {
-    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') fail('confirm requires POST', 405);
-    $body = json_body();
-    $id  = (int)($body['id'] ?? 0);
-    $sci = trim((string)($body['sci'] ?? ''));
-    if ($id <= 0 || $sci === '') fail('confirm needs id and sci');
-
-    $stmt = $pdo->prepare('SELECT Candidates, Status FROM submissions WHERE Id = :id');
+// ----------------------------------------------------------------- audio
+// Submissions live under Extracted/Submissions, which no static route
+// serves - and should not, because a field recording deserves the same
+// authentication as everything else here. So the audio comes back through
+// the API, by id, with the path read from the database rather than taken
+// from the request.
+if ($action === 'audio') {
+    $id = (int)($_GET['id'] ?? 0);
+    if ($id <= 0) fail('bad id');
+    $stmt = $pdo->prepare("SELECT Audio FROM submissions
+                           WHERE Id = :id AND Status = 'confirmed'");
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
-    if (!$row) fail('no such submission', 404);
-    if ($row['Status'] === 'confirmed') fail('already confirmed', 409);
+    if (!$row) fail('no such recording', 404);
 
-    // Only a species the analyser actually offered. Without this the
-    // endpoint would be a way to write arbitrary names into the site.
-    $candidates = json_decode((string)($row['Candidates'] ?? '[]'), true) ?: [];
-    $match = null;
-    foreach ($candidates as $c) {
-        if (is_array($c) && ($c['sci'] ?? null) === $sci) { $match = $c; break; }
+    $real = realpath($EXTRACTED . '/' . (string)$row['Audio']);
+    $base = realpath($EXTRACTED . '/Submissions');
+    if ($real === false || $base === false || !str_starts_with($real, $base . '/')) {
+        fail('the recording is missing', 404);
     }
-    if ($match === null) fail('that species was not one of the candidates');
 
-    $upd = $pdo->prepare('UPDATE submissions
-        SET Status = :s, Sci_Name = :sci, Com_Name = :com, Confidence = :conf
-        WHERE Id = :id');
-    $upd->execute([
-        ':s'    => 'confirmed',
-        ':sci'  => $sci,
-        ':com'  => (string)($match['com'] ?? $sci),
-        ':conf' => (float)($match['conf'] ?? 0),
-        ':id'   => $id,
-    ]);
-    echo json_encode(['ok' => true, 'id' => $id, 'status' => 'confirmed',
-                      'sci' => $sci, 'com' => $match['com'] ?? $sci]);
+    $types = ['webm' => 'audio/webm', 'ogg' => 'audio/ogg', 'm4a' => 'audio/mp4',
+              'wav' => 'audio/wav', 'mp3' => 'audio/mpeg'];
+    $ext = strtolower(pathinfo($real, PATHINFO_EXTENSION));
+    $size = (int)filesize($real);
+
+    header('Content-Type: ' . ($types[$ext] ?? 'application/octet-stream'));
+    header('Accept-Ranges: bytes');
+    header('Cache-Control: private, max-age=3600');
+
+    // Safari will not play a <audio> source that cannot serve a range, so
+    // honour a single range rather than making it download the clip whole
+    // and then refuse it.
+    $start = 0;
+    $end = $size - 1;
+    $range = (string)($_SERVER['HTTP_RANGE'] ?? '');
+    if ($range !== '' && preg_match('/^bytes=(\d*)-(\d*)$/', $range, $m)) {
+        if ($m[1] === '' && $m[2] === '') {
+            http_response_code(416);
+            header("Content-Range: bytes */$size");
+            exit;
+        }
+        if ($m[1] === '') {
+            $start = max(0, $size - (int)$m[2]);
+        } else {
+            $start = (int)$m[1];
+            if ($m[2] !== '') $end = min($end, (int)$m[2]);
+        }
+        if ($start > $end || $start >= $size) {
+            http_response_code(416);
+            header("Content-Range: bytes */$size");
+            exit;
+        }
+        http_response_code(206);
+        header("Content-Range: bytes $start-$end/$size");
+    }
+
+    header('Content-Length: ' . ($end - $start + 1));
+    $handle = fopen($real, 'rb');
+    if ($handle === false) fail('could not read the recording', 500);
+    fseek($handle, $start);
+    $left = $end - $start + 1;
+    while ($left > 0 && !feof($handle)) {
+        $chunk = fread($handle, (int)min(65536, $left));
+        if ($chunk === false || $chunk === '') break;
+        echo $chunk;
+        $left -= strlen($chunk);
+    }
+    fclose($handle);
     exit;
 }
 
@@ -254,13 +346,7 @@ if ($action === 'reject') {
 
     // Discard the audio too: a rejected recording is one nobody wants,
     // and keeping it only grows the disk.
-    $extracted = conf_value($CONF, 'EXTRACTED', (getenv('HOME') ?: '/home/pi') . '/BirdSongs/Extracted');
-    $path = $extracted . '/' . (string)$row['Audio'];
-    $real = realpath($path);
-    $base = realpath($extracted . '/Submissions');
-    if ($real !== false && $base !== false && str_starts_with($real, $base . '/')) {
-        @unlink($real);
-    }
+    drop_audio($EXTRACTED, (string)$row['Audio']);
     $pdo->prepare('UPDATE submissions SET Status = :s WHERE Id = :id')
         ->execute([':s' => 'rejected', ':id' => $id]);
     echo json_encode(['ok' => true, 'id' => $id, 'status' => 'rejected']);
@@ -272,7 +358,7 @@ if ($action === 'list') {
     $limit = (int)($_GET['limit'] ?? 100);
     if ($limit < 1 || $limit > 500) $limit = 100;
     $stmt = $pdo->prepare("SELECT Id, Created, Sci_Name, Com_Name, Confidence,
-                                  Lat, Lon, Audio, Submitter
+                                  Place, Area, Audio, Submitter
                            FROM submissions
                            WHERE Status = 'confirmed'
                            ORDER BY Created DESC, Id DESC
@@ -288,14 +374,49 @@ if ($action === 'list') {
             'sci'   => $r['Sci_Name'],
             'com'   => $r['Com_Name'],
             'conf'  => $r['Confidence'] === null ? null : round((float)$r['Confidence'], 3),
-            'lat'   => $r['Lat'] === null ? null : (float)$r['Lat'],
-            'lon'   => $r['Lon'] === null ? null : (float)$r['Lon'],
-            'audio' => $r['Audio'],
-            'who'   => $r['Submitter'],
+            'place' => $r['Place'],
+            'area'  => $r['Area'],
+            // A flag, not a path. The client asks for ?action=audio&id=N
+            // and the server looks the path up again - the filesystem
+            // layout is not the browser's business.
+            'audio' => $r['Audio'] !== null && $r['Audio'] !== '',
+            'who'   => display_submitter($r['Submitter']),
         ];
     }
-    echo json_encode(['ok' => true, 'submissions' => $out]);
+
+    // Per-area totals for the map, over every confirmed submission rather
+    // than the page of rows above - the shading should not change because
+    // somebody asked for a shorter list.
+    $areas = [];
+    $totals = $pdo->query("SELECT Area, COUNT(*) AS n, COUNT(DISTINCT Sci_Name) AS species
+                           FROM submissions
+                           WHERE Status = 'confirmed' AND Area IS NOT NULL
+                           GROUP BY Area");
+    foreach ($totals as $r) {
+        $areas[] = ['area' => (string)$r['Area'], 'count' => (int)$r['n'],
+                    'species' => (int)$r['species']];
+    }
+
+    // The station's own listening post. Its area, never its coordinates:
+    // the map wants somewhere to put the mark, not the address.
+    $home = avian_place_for(
+        num_or_null(conf_value($CONF, 'LATITUDE', ''), -90, 90),
+        num_or_null(conf_value($CONF, 'LONGITUDE', ''), -180, 180)
+    );
+    $station = null;
+    try {
+        $station = [
+            'area'    => $home['area'],
+            'species' => (int)$pdo->query('SELECT COUNT(DISTINCT Sci_Name) FROM detections')
+                ->fetchColumn(),
+        ];
+    } catch (Throwable $e) {
+        $station = ['area' => $home['area'], 'species' => null];
+    }
+
+    echo json_encode(['ok' => true, 'submissions' => $out, 'areas' => $areas,
+                      'station' => $station]);
     exit;
 }
 
-fail('unknown action; try submit, result, confirm, reject or list', 404);
+fail('unknown action; try submit, result, audio, reject or list', 404);
