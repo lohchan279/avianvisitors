@@ -373,6 +373,11 @@ overlay block rewrites the cookie path to `/preview/avian/`, which also
 keeps the two sessions apart: same cookie name, different paths, so signing
 in to the preview cannot log you out of the real site.
 
+**The `(?i)` in that rewrite is load-bearing.** PHP writes the attribute
+lower case — `path=/avian/` — and Go's regexp is case sensitive, so the
+capitalised pattern it started as matched nothing and failed in exactly
+the way it would have if the line were missing. A test pins the flag.
+
 `preview-expose.sh` appends a delimited block to the site overlay rather
 than rewriting it, because that file already carries the `/stream` route
 keeping live audio alive on the public host. It backs the overlay up,

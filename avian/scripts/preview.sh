@@ -352,7 +352,11 @@ export PHP_CLI_SERVER_WORKERS=4
 echo "preview   http://127.0.0.1:$PORT"
 echo "arriving as $WHO"
 if [ "$EXPOSE" = 1 ]; then
-  echo "admin gate ON; API narrowed to: $(tr '\n' ' ' <"$BASE/api-allowlist")"
+  if [ "${AV_REQUIRE_AUTH:-}" = 0 ]; then
+    echo "admin gate OFF; API narrowed to: $(tr '\n' ' ' <"$BASE/api-allowlist")"
+  else
+    echo "admin gate ON; API narrowed to: $(tr '\n' ' ' <"$BASE/api-allowlist")"
+  fi
   echo
   echo "publish it with:  sudo $REPO/avian/scripts/preview-expose.sh install $PORT"
   echo "take it down:     sudo $REPO/avian/scripts/preview-expose.sh remove"

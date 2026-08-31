@@ -238,8 +238,19 @@ class FieldRecordingTests(unittest.TestCase):
         # would appear to work and silently not.
         self.assertIn("'path' => '/avian/'", self.read("avian/api/admin-auth.php"))
         overlay = self.read("avian/scripts/preview-expose.sh")
-        self.assertIn('header_down Set-Cookie "Path=/avian/" "Path=/preview/avian/"',
+
+        # (?i) is the whole fix. PHP writes the attribute lower case and
+        # Go's regexp is case sensitive, so a capitalised pattern matched
+        # nothing and failed exactly as if the line were missing - which
+        # is what made it cost an evening to find. A tidy-up that drops
+        # the flag would silently reintroduce it.
+        self.assertIn('header_down Set-Cookie "(?i)path=/avian/" "path=/preview/avian/"',
                       overlay)
+
+        # And the block carries a version, so an overlay written by an
+        # older checkout is reported rather than quietly serving old rules.
+        self.assertIn("BLOCK_VERSION=", overlay)
+        self.assertIn("$BEGIN v$BLOCK_VERSION", overlay)
 
     def test_expose_narrows_the_api_to_endpoints_that_cannot_mutate(self):
         preview = self.read("avian/scripts/preview.sh")

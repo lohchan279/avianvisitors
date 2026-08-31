@@ -32,7 +32,7 @@ END='# <<< avian preview'
 # compares it, so a block left over from an older checkout is reported
 # rather than quietly serving the old rules - which is invisible
 # otherwise, since install only ever writes the block once.
-BLOCK_VERSION=2
+BLOCK_VERSION=3
 ACTION="${1:-status}"
 PORT="${2:-8080}"
 
@@ -58,7 +58,12 @@ handle_path /preview/* {
 		# where the preview actually lives. This also keeps the two
 		# sessions apart: same cookie name, different paths, so signing
 		# in to the preview cannot log you out of the real site.
-		header_down Set-Cookie "Path=/avian/" "Path=/preview/avian/"
+		#
+		# (?i) is load-bearing. PHP writes the attribute lower case -
+		# "path=/avian/" - and Go's regexp is case sensitive, so a
+		# capitalised pattern here matches nothing at all and fails
+		# exactly the way it would if the line were absent.
+		header_down Set-Cookie "(?i)path=/avian/" "path=/preview/avian/"
 	}
 }
 $END
