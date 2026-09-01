@@ -208,6 +208,24 @@ def accept_threshold() -> float:
     return value if 0 < value <= 1 else DEFAULT_ACCEPT
 
 
+def discard_audio(src: Path) -> None:
+    """Drop a clip nobody can use, and never let that failure matter.
+
+    The file is not ours. PHP takes the upload and creates the day's
+    directory as the web user, and unlinking needs write permission on
+    the *directory*, not the file - so the station owner, which is who
+    this worker runs as, can be refused. That is a tidiness problem: the
+    verdict is already written, and the list only shows confirmed rows,
+    so an orphan here is invisible rather than wrong. Letting it raise
+    turned a correctly analysed recording into "Permission denied" on
+    the caller's phone.
+    """
+    try:
+        src.unlink(missing_ok=True)
+    except OSError as e:
+        log.warning("could not remove %s (%s); leaving it on disk", src, e)
+
+
 def process(db: sqlite3.Connection, row: sqlite3.Row, extracted: Path) -> None:
     sub_id = row["Id"]
     src = extracted / row["Audio"]
@@ -222,6 +240,11 @@ def process(db: sqlite3.Connection, row: sqlite3.Row, extracted: Path) -> None:
     week = submission_week(row["Created"])
 
     tmp = Path(tempfile.mkdtemp(prefix="submission-"))
+    # Once a verdict is written the row is answered. Anything that goes
+    # wrong after that is housekeeping, and must not be allowed to
+    # rewrite the answer as a failure - which is exactly what an
+    # un-deletable clip used to do.
+    settled = False
     try:
         wav = tmp / "clip.wav"
         if not to_wav(src, wav):
@@ -236,16 +259,21 @@ def process(db: sqlite3.Connection, row: sqlite3.Row, extracted: Path) -> None:
             # nearly said - but not the audio, which nobody can use.
             near = f"best {best['com']} {best['conf']:.2f} < {bar:.2f}" if best else "nothing heard"
             finish(db, sub_id, "unsure", candidates=candidates, error=near)
-            src.unlink(missing_ok=True)
+            settled = True
+            discard_audio(src)
             log.info("#%s unsure: %s", sub_id, near)
             return
 
         finish(db, sub_id, "confirmed", candidates=candidates, best=best)
+        settled = True
         log.info("#%s: %s %.2f (also %s)", sub_id, best["com"], best["conf"],
                  ", ".join(f"{c['com']} {c['conf']:.2f}" for c in candidates[1:]) or "nothing")
     except Exception as e:                      # a bad clip must not kill the worker
         log.exception("#%s failed", sub_id)
-        finish(db, sub_id, "failed", error=str(e)[:200])
+        if settled:
+            log.warning("#%s: after the verdict was written: %s", sub_id, e)
+        else:
+            finish(db, sub_id, "failed", error=str(e)[:200])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 

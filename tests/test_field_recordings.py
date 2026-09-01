@@ -86,6 +86,91 @@ class FieldRecordingTests(unittest.TestCase):
         self.assertIn("sci_name not in predicted", worker)
         self.assertIn("from utils.classes import birdnet_week", worker)
 
+    def test_a_clip_it_cannot_delete_does_not_undo_the_verdict(self):
+        """PHP owns the directory; the worker only visits it.
+
+        The upload arrives through the web server, which creates the
+        day's directory as its own user. Unlinking a file needs write
+        permission on the directory that holds it, not on the file, so
+        the worker - running as the station owner - can be refused. It
+        deletes the clip behind an "unsure" verdict, and that delete used
+        to run after the verdict was written and outside any guard: the
+        PermissionError fell through to the catch-all, which overwrote a
+        correctly analysed row with "failed" and put [Errno 13] on the
+        caller's phone. The clip is housekeeping. The verdict is the
+        product.
+        """
+        import importlib.util
+        import sqlite3
+        import stat
+        import sys
+        import tempfile
+
+        spec = importlib.util.spec_from_file_location(
+            "submission_worker", ROOT / "scripts" / "submission_worker.py")
+        worker = importlib.util.module_from_spec(spec)
+        sys.modules["submission_worker"] = worker
+        spec.loader.exec_module(worker)
+
+        with tempfile.TemporaryDirectory() as box:
+            extracted = pathlib.Path(box)
+            day = extracted / "Submissions" / "2026-09-01"
+            day.mkdir(parents=True)
+            clip = day / "061605-81baaf637f7e.webm"
+            clip.write_bytes(b"not really audio")
+
+            db = sqlite3.connect(":memory:")
+            db.row_factory = sqlite3.Row
+            db.execute("""CREATE TABLE submissions (
+                Id INTEGER PRIMARY KEY, Created TEXT, Status TEXT, Sci_Name TEXT,
+                Com_Name TEXT, Confidence REAL, Candidates TEXT, Lat REAL, Lon REAL,
+                Audio TEXT, Error TEXT)""")
+            db.execute("""INSERT INTO submissions
+                (Id, Created, Status, Lat, Lon, Audio) VALUES
+                (1, '2026-09-01T06:16:05+00:00', 'analysing', 1.3, 103.9,
+                 'Submissions/2026-09-01/061605-81baaf637f7e.webm')""")
+            db.commit()
+
+            # Below the accept bar, so the worker takes the branch that
+            # deletes the clip.
+            worker.to_wav = lambda src, wav: wav.write_bytes(b"") or True
+            worker.analyse = lambda *a, **k: [
+                {"sci": "Turdus mandarinus", "com": "Chinese Blackbird", "conf": 0.11}]
+            worker.accept_threshold = lambda: 0.5
+            # Reaches into BirdNET's utils package, which is not importable
+            # here and is not what this test is about.
+            worker.submission_week = lambda created: 35
+
+            # Read and execute, but not write: exactly what the worker
+            # gets when the web server made the directory. Root ignores
+            # that, and skipping under root would mean this never runs in
+            # a container - so there the refusal is raised directly. The
+            # guard under test is the same either way.
+            real_unlink = pathlib.Path.unlink
+            as_root = os.geteuid() == 0
+            if as_root:
+                def refuse(self, *a, **k):
+                    if self == clip:
+                        raise PermissionError(13, "Permission denied", str(clip))
+                    return real_unlink(self, *a, **k)
+                pathlib.Path.unlink = refuse
+            else:
+                os.chmod(day, stat.S_IRUSR | stat.S_IXUSR)
+            try:
+                row = db.execute("SELECT * FROM submissions WHERE Id = 1").fetchone()
+                worker.process(db, row, extracted)
+            finally:
+                pathlib.Path.unlink = real_unlink
+                os.chmod(day, stat.S_IRWXU)
+
+            got = db.execute("SELECT Status, Error FROM submissions WHERE Id = 1").fetchone()
+
+        self.assertEqual(
+            got["Status"], "unsure",
+            f"a clip that could not be deleted overwrote the verdict: {dict(got)}")
+        self.assertNotIn("Permission denied", got["Error"] or "")
+        self.assertNotIn("Errno 13", got["Error"] or "")
+
     # ---- the preview harness ----------------------------------------
     def test_preview_still_reads_both_real_lists(self):
         # preview.sh derives its webroot and its API allowlist from the
