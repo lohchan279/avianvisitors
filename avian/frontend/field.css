@@ -147,6 +147,7 @@
 .field-legend {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
   margin: 10px 0 20px;
 }
@@ -163,7 +164,7 @@
   background: var(--danger, #9b3f37);
 }
 /* Pushed to the far end so it reads as an aside to the ramp, not a step
-   on it. Drops away on narrow screens, where the ramp needs the room. */
+   on it. Wraps to its own row when there is no room beside the chips. */
 .field-legend-note {
   margin-left: auto;
   font: 9px/1 ui-monospace, "SF Mono", Menlo, monospace;
@@ -172,7 +173,11 @@
   color: var(--ink-soft, #908576);
 }
 @media (max-width: 460px) {
-  .field-legend-note { display: none; }
+  /* A phone is where this map is actually read, so dropping the note here
+     removed it from everywhere that matters - and it is the line that
+     explains why one district is darker than the ramp allows. Give it the
+     next row instead of the bin. */
+  .field-legend-note { margin-left: 0; margin-top: 7px; flex-basis: 100%; }
 }
 
 .field-credit {
