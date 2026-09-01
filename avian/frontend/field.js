@@ -237,6 +237,10 @@
     areas.forEach(function (row) {
       var base = areaPaths[row.area];
       if (!base || !row.count) return;
+      // Home gets its own wash below, at the top of the ramp. Painting
+      // both would stack two translucent fills into something darker
+      // than the darkest step.
+      if (row.area === homeArea) return;
       var wash = svgEl('path', 'field-wash');
       wash.setAttribute('d', base.getAttribute('d'));
       wash.setAttribute('fill-opacity', String(HEAT_OPACITY[heatLevel(row.count) - 1]));
@@ -272,6 +276,19 @@
         rank: row.count + (isHome ? 1e6 : 0)
       });
     });
+
+    /* The station hears more than anywhere else by a wide margin, so the
+     * one district that is certainly busy was the one drawn empty. It sits
+     * at the top of the ramp rather than on it: species heard and clips
+     * caught are different units, and pretending they share a scale would
+     * flatten every field district to nothing. The label says which
+     * number it is. */
+    if (homeArea && areaPaths[homeArea]) {
+      var homeWash = svgEl('path', 'field-wash field-home-wash');
+      homeWash.setAttribute('d', areaPaths[homeArea].getAttribute('d'));
+      homeWash.setAttribute('fill-opacity', String(HEAT_OPACITY[HEAT_OPACITY.length - 1]));
+      heat.appendChild(homeWash);
+    }
 
     if (homeArea) {
       var mark = svgEl('circle', 'field-home');
@@ -380,6 +397,10 @@
       wrap.appendChild(chip);
     });
     wrap.appendChild(el('span', 'field-legend-label', 'more'));
+    // The station's district is painted at the darkest step but is not on
+    // this ramp - it counts species heard, not clips caught. Say so, rather
+    // than letting the darkest chip imply a number it does not mean.
+    wrap.appendChild(el('span', 'field-legend-note', 'home shaded in full'));
     return wrap;
   }
 
@@ -794,6 +815,38 @@
   }
 
   // --------------------------------------------------------------- mount
+  /* The recorder used to be a floating microphone and the Map view took
+   * it away, which moved it off the page everybody actually lands on.
+   * It is back, on every view except the Map - which has a full-width
+   * button of its own and does not need two. */
+  function buildFab() {
+    var fab = el('button', 'field-fab');
+    fab.id = 'fieldFab';
+    fab.type = 'button';
+    fab.setAttribute('aria-label', 'record a bird');
+    fab.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" '
+      + 'stroke="currentColor" stroke-width="1.8" stroke-linecap="round">'
+      + '<rect x="9" y="2.5" width="6" height="11" rx="3"/>'
+      + '<path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3.5"/></svg>';
+    fab.addEventListener('click', openSheet);
+    document.body.appendChild(fab);
+
+    // Which view is showing is apt.js's business, and it already says so
+    // in the slider: aria-current on the active button. Watching that
+    // costs apt.js nothing and survives however it decides to switch.
+    var slider = document.getElementById('slider');
+    function sync() {
+      var current = slider && slider.querySelector('button[data-i][aria-current="true"]');
+      fab.hidden = !!(current && current.dataset.i === '3');
+    }
+    if (slider) {
+      new MutationObserver(sync).observe(slider, {
+        attributes: true, subtree: true, attributeFilter: ['aria-current']
+      });
+    }
+    sync();
+  }
+
   function buildSheet() {
     sheet = el('div', 'field-sheet');
     sheet.id = 'fieldSheet';
@@ -862,6 +915,7 @@
 
     view.appendChild(wrap);
     buildSheet();
+    buildFab();
 
     // Load when the view is first reached rather than on every page load.
     // The slider button is the only way in besides a refresh landing back

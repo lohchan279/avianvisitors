@@ -162,6 +162,18 @@
   border-radius: 2px;
   background: var(--danger, #9b3f37);
 }
+/* Pushed to the far end so it reads as an aside to the ramp, not a step
+   on it. Drops away on narrow screens, where the ramp needs the room. */
+.field-legend-note {
+  margin-left: auto;
+  font: 9px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink-soft, #908576);
+}
+@media (max-width: 460px) {
+  .field-legend-note { display: none; }
+}
 
 .field-credit {
   margin: 22px 0 0;
@@ -215,6 +227,41 @@
   color: var(--ink-soft, #908576);
 }
 .field-row audio { width: 100%; height: 32px; }
+
+/* ---------------------------------------------- the floating recorder */
+/* On every view but the Map, which has a full-width button of its own.
+   The Map view is where the recorder lives; this is the way in from the
+   page people actually land on. */
+.field-fab {
+  position: fixed;
+  right: 18px;
+  bottom: 84px;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 0;
+  background: var(--paper, #fcfcfb);
+  color: var(--ink, #1a1612);
+  box-shadow: var(--edge-lg, 0 8px 28px rgba(26,22,18,.1));
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  z-index: 40;
+  transition: transform .16s ease;
+}
+.field-fab svg { width: 22px; height: 22px; }
+.field-fab:hover { transform: translateY(-1px); }
+.field-fab:active { transform: translateY(0); }
+.field-fab:focus-visible { outline: 2px solid var(--accent, #4a3f31); outline-offset: 3px; }
+/* The sheet covers it; leaving it beneath is a stray tap target. */
+.field-recording-open .field-fab { display: none; }
+@media (max-width: 700px) {
+  .field-fab { right: 14px; bottom: 70px; }
+}
+
+/* The station district sits at the top of the ramp rather than on it -
+   see the comment in field.js. */
+.field-home-wash { pointer-events: none; }
 
 /* --------------------------------------------------- the record sheet */
 
