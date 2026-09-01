@@ -86,18 +86,45 @@ else
   else
     bad "the cache token matches the checkout" "served ${served:-none}, checkout ${ondisk:-none}"
   fi
+
+  # Compared here rather than in the asset loop below, because "/" is what
+  # a browser actually asks for and /index.html can be a redirect. Compared
+  # as strings rather than by digest: $( ) has already eaten the trailing
+  # newline off the response, so it has to eat it off the file too, and a
+  # digest taken either side of that would never agree.
+  if [ "$index" = "$(cat "$REPO/avian/frontend/index.html")" ]; then
+    good "/ matches the checkout"
+  else
+    bad "/ matches the checkout" "the served index.html is not the checkout's"
+  fi
 fi
 
-for asset in /field.js /field.css /sg-map.js; do
-  status=$(code "$asset")
-  if [ "$status" = 200 ]; then
-    good "$asset is served"
+# Not "does it answer 200" - that passes for a stale copy, a leftover
+# regular file shadowing the link, or anything else that happens to sit
+# at the path. Compare the bytes. This is the check that separates "the
+# station is serving the old script" from "the station is fine and the
+# staleness is downstream", and without it that question cannot be
+# settled from here at all.
+digest() { md5sum | cut -d' ' -f1; }
+for asset in apt.js styles.css field.js field.css sg-map.js; do
+  status=$(code "/$asset")
+  if [ "$status" != 200 ]; then
+    bad "/$asset is served" "$status - add it to the manifest in scripts/link_webroot.sh, then --apply"
+    continue
+  fi
+  live=$(body "/$asset" | digest)
+  disk=$(digest <"$REPO/avian/frontend/$asset")
+  if [ "$live" = "$disk" ]; then
+    good "/$asset matches the checkout"
   else
-    bad "$asset is served" "$status - add it to the manifest in scripts/link_webroot.sh, then --apply"
+    bad "/$asset matches the checkout" \
+      "served copy differs from avian/frontend/$asset - re-run with --apply"
   fi
 done
 
-if body /sg-map.js | grep -q 'AVIAN_SG_MAP'; then
+# grep -q closes the pipe at the first match and pipefail then reports the
+# whole thing as failed. Same trap as the worker check below.
+if [ "$(body /sg-map.js | grep -c 'AVIAN_SG_MAP')" -gt 0 ]; then
   good "the map data is the real thing"
 else
   bad "the map data is the real thing" "sg-map.js does not define AVIAN_SG_MAP"
