@@ -70,7 +70,12 @@ EOF
 
 ln -sf "$UNIT" "/usr/lib/systemd/system/$UNIT_NAME"
 systemctl daemon-reload
-systemctl enable --now "$UNIT_NAME"
+systemctl enable "$UNIT_NAME"
+# restart, not "enable --now". This script is also the repair command, and
+# --now does nothing at all to a unit that is already active - so re-running
+# it after a pull leaves the previous worker running the previous code,
+# which is the exact failure people run it to fix.
+systemctl restart "$UNIT_NAME"
 sleep 1
 systemctl --no-pager --lines=5 status "$UNIT_NAME" || true
 echo

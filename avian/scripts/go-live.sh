@@ -51,6 +51,15 @@ if [ "$APPLY" = 1 ]; then
   # repo owner so the high-water file does not end up owned by root.
   echo "bumping the cache token"
   sudo -u "$owner" "$REPO/avian/scripts/bump_version.sh" | sed 's/^/  /'
+
+  # The frontend swaps the instant the pull lands. The worker is the
+  # opposite: it goes on running whatever Python it started with, so a
+  # deploy that changes how recordings are scored leaves the old scorer
+  # in memory indefinitely.
+  if systemctl is-active --quiet submission_worker 2>/dev/null; then
+    echo "restarting the field-recording worker"
+    systemctl restart submission_worker
+  fi
   echo
 fi
 
@@ -112,9 +121,30 @@ else
 fi
 
 # ---- the worker -------------------------------------------------------
-if systemctl list-unit-files 2>/dev/null | grep -q '^submission_worker\.service'; then
+# grep -q on a pipe is the obvious spelling and it is wrong here. It exits
+# at the first match, systemctl dies of SIGPIPE writing the rest of the
+# list, and pipefail turns that into a failed test - so a worker that is
+# installed, enabled and has been running for a day gets reported as "not
+# installed". Count instead: grep -c reads to the end, and the status
+# being tested is grep's own.
+installed=$(systemctl list-unit-files 2>/dev/null | grep -c '^submission_worker\.service')
+if [ "${installed:-0}" -gt 0 ]; then
   if systemctl is-active --quiet submission_worker; then
     good "the field-recording worker is running"
+
+    # A pull replaces the worker's source; the running process keeps the
+    # code it started with, and systemd has no reason to notice. The
+    # station then sits there writing statuses the new frontend does not
+    # understand, and every recording comes back as an error - with the
+    # worker green in every other check.
+    started=$(date -d "$(systemctl show submission_worker -p ExecMainStartTimestamp --value 2>/dev/null)" +%s 2>/dev/null)
+    changed=$(stat -c %Y "$REPO/scripts/submission_worker.py" 2>/dev/null)
+    if [ -n "$started" ] && [ -n "$changed" ] && [ "$changed" -gt "$started" ]; then
+      bad "the worker is running the current code" \
+        "it started before the last change to submission_worker.py - sudo systemctl restart submission_worker"
+    else
+      good "the worker is running the current code"
+    fi
   else
     bad "the field-recording worker is running" \
       "installed but not active - sudo systemctl start submission_worker"
