@@ -504,8 +504,16 @@ Finding them without transcribing a 64-character hex string:
 ```bash
 ./avian/scripts/access-setup.sh discover https://ghlyms.com
 sudo ./avian/scripts/access-setup.sh install <team-domain> <aud>
-./avian/scripts/access-setup.sh check    # fetches the team certificates
+./avian/scripts/access-setup.sh check https://ghlyms.com
 ```
+
+Give `check` the site URL and it does the one comparison that matters:
+the audience it has configured against the `kid` the edge actually sends.
+A tag from a different application, or from before the app was recreated,
+is otherwise **silent** — nothing rejects it, Access auth simply never
+matches, and every visitor falls back to the password. It reports every
+problem it finds rather than stopping at the first, so an unreachable
+certificate endpoint does not hide a wrong audience.
 
 `discover` needs no sign-in and no devtools: an unauthenticated request to
 a protected site is bounced to the team login page, and that redirect names

@@ -2,7 +2,9 @@
 # Find and install the two Cloudflare Access settings the field-recording
 # API needs, and check they work.
 #
-#   ./avian/scripts/access-setup.sh check       # what is configured now
+#   ./avian/scripts/access-setup.sh check [url] # what is configured now,
+#                                               # cross-checked against the
+#                                               # edge if a url is given
 #   ./avian/scripts/access-setup.sh discover https://ghlyms.com
 #   ./avian/scripts/access-setup.sh read        # read them off a real token
 #   sudo ./avian/scripts/access-setup.sh install <team-domain> <aud>
@@ -47,6 +49,24 @@ conf_value() {
 valid_team() { [[ "$1" =~ ^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}$ ]]; }
 valid_aud()  { [[ "$1" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; }
 
+# Where an unauthenticated request to a protected site gets bounced to.
+# The host is the team domain and the kid parameter is the application's
+# audience, so this one lookup answers both "what are the values" and
+# "are the values I installed the right ones".
+login_redirect() {
+  curl -sS -o /dev/null -D - --max-time 15 "$1" 2>/dev/null \
+    | tr -d '\r' | sed -n 's/^[Ll]ocation:[[:space:]]*//p' | head -1
+}
+
+redirect_field() {
+  php -r '
+    $url = trim(stream_get_contents(STDIN));
+    if ($argv[1] === "host") { echo parse_url($url, PHP_URL_HOST) ?: ""; exit; }
+    parse_str((string)parse_url($url, PHP_URL_QUERY), $query);
+    echo (string)($query["kid"] ?? "");
+  ' "$2" <<<"$1"
+}
+
 case "$ACTION" in
   discover)
     # An unauthenticated request to a protected site is bounced to the
@@ -55,8 +75,7 @@ case "$ACTION" in
     # in the query string. No sign-in, no cookie, no devtools.
     url="${2:-}"
     [ -n "$url" ] || { echo "usage: $0 discover https://your.site" >&2; exit 64; }
-    location=$(curl -sS -o /dev/null -D - --max-time 15 "$url" 2>/dev/null \
-      | tr -d '\r' | sed -n 's/^[Ll]ocation:[[:space:]]*//p' | head -1)
+    location=$(login_redirect "$url")
     if [ -z "$location" ]; then
       echo "no redirect from $url - is it actually behind Access?" >&2
       echo "If you are already signed in, your browser may be sending a" >&2
@@ -183,28 +202,66 @@ case "$ACTION" in
     # The one thing that can be wrong without looking wrong: a team domain
     # that does not publish certificates. Without them nothing verifies,
     # and every request falls back to the password.
+    problems=0
     certs=$(curl -fsS --max-time 6 "https://$team/cdn-cgi/access/certs" 2>/dev/null)
-    if [ -z "$certs" ]; then
-      echo "signing certificates: UNREACHABLE at https://$team/cdn-cgi/access/certs"
-      echo "  check the team domain, or the station's internet access"
-      exit 1
-    fi
-    count=$(php -r '
+    count=0
+    [ -n "$certs" ] && count=$(php -r '
       $j = json_decode(stream_get_contents(STDIN), true);
       echo is_array($j) ? count($j["public_certs"] ?? []) : 0;
     ' <<<"$certs")
     if [ "${count:-0}" -lt 1 ]; then
-      echo "signing certificates: none published at that team domain"
+      echo "signing certificates: NOT AVAILABLE from https://$team/cdn-cgi/access/certs"
+      echo "  check the team domain, or the station's internet access"
+      problems=$((problems + 1))
+    else
+      echo "signing certificates: $count fetched from $team"
+    fi
+
+    # The one thing that can be wrong and still look right: an audience
+    # tag from a different application, or from before the app was
+    # recreated. Nothing rejects it loudly - Access auth simply never
+    # matches and every visitor falls back to the password. Compare it
+    # against what the edge actually sends.
+    site="${2:-}"
+    if [ -n "$site" ]; then
+      location=$(login_redirect "$site")
+      if [ -z "$location" ]; then
+        echo "audience: could not check - $site did not redirect to a login"
+        echo "  (running this from a signed-in browser or an Access bypass"
+        echo "   rule both look like this; it does not mean the tag is wrong)"
+      else
+        edge_team=$(redirect_field "$location" host)
+        edge_aud=$(redirect_field "$location" kid)
+        if [ "$edge_team" != "$team" ]; then
+          echo "team domain: MISMATCH - $site is behind $edge_team, not $team"
+          problems=$((problems + 1))
+        fi
+        if [ -z "$edge_aud" ]; then
+          echo "audience: the redirect carried no tag to compare against"
+        elif [ "$edge_aud" != "$aud" ]; then
+          echo "audience: MISMATCH - $site sends ${edge_aud:0:8}..., configured ${aud:0:8}..."
+          echo "  fix with: sudo $0 install $edge_team $edge_aud"
+          problems=$((problems + 1))
+        else
+          echo "audience: matches what $site sends"
+        fi
+      fi
+    fi
+
+
+    echo
+    if [ "$problems" -gt 0 ]; then
+      echo "Access authentication: NOT WORKING ($problems problem(s) above)"
+      echo "Until those are fixed the API falls back to the admin password,"
+      echo "which is silent - visitors just see the unlock message."
       exit 1
     fi
-    echo "signing certificates: $count fetched from $team"
-    echo
     echo "Access authentication: ON"
     echo "People on your Access policy can record without the admin password."
     ;;
 
   *)
-    echo "usage: $0 check | discover <url> | read | install <team> <aud>" >&2
+    echo "usage: $0 check [url] | discover <url> | read | install <team> <aud>" >&2
     exit 64
     ;;
 esac
