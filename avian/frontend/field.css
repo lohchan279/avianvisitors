@@ -131,7 +131,24 @@
   pointer-events: auto;
   text-align: center;
 }
-.field-label[data-on="true"] { background: var(--ink, #1a1612); color: var(--paper, #fcfcfb); }
+/* Hidden until its district is tapped: the card is wider than most
+   districts, so leaving them all up buried the shading underneath.
+   opacity rather than display, because the box still has to lay out for
+   the edge clamp in placeLabels to measure it. */
+/* These set display, which outranks the hidden attribute's UA rule, so
+   without this they draw while script has them hidden. styles.css has a
+   global [hidden] rule that covers it on the site, but relying on another
+   stylesheet to keep this one's elements hidden is a trap - it fails the
+   moment field.css is loaded on its own. */
+.field-sheet[hidden], .field-fab[hidden], .field-step[hidden] { display: none !important; }
+
+.field-label { opacity: 0; pointer-events: none; transition: opacity .12s ease; }
+.field-label[data-on="true"] {
+  opacity: 1;
+  pointer-events: auto;
+  background: var(--ink, #1a1612);
+  color: var(--paper, #fcfcfb);
+}
 .field-label:focus-visible { outline: 2px solid var(--accent, #4a3f31); outline-offset: 1px; }
 .field-label-name {
   font: 10px/1.1 ui-monospace, "SF Mono", Menlo, monospace;
@@ -407,6 +424,7 @@
 @media (prefers-reduced-motion: reduce) {
   .field-spinner { animation-duration: 3s; }
   .field-area { transition: none; }
+  .field-label { transition: none; }
 }
 
 @media (max-width: 700px) {

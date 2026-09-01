@@ -220,6 +220,32 @@
     return level;
   }
 
+  /* One wash over the land, plus a dot when the district is only a few
+   * pixels across - Sentosa and the offshore islands are invisible as a
+   * wash alone, and they are exactly the places worth a trip. Shared by
+   * the field catches and the station's own district so the two cannot
+   * drift apart. */
+  function addWash(heat, area, opacity, extra) {
+    var base = areaPaths[area];
+    if (!base) return;
+    var wash = svgEl('path', 'field-wash' + (extra ? ' ' + extra : ''));
+    wash.setAttribute('d', base.getAttribute('d'));
+    wash.setAttribute('fill-opacity', String(opacity));
+    heat.appendChild(wash);
+
+    try {
+      var span = wash.getBBox();
+      if (Math.max(span.width, span.height) < 16 && areaAt[area]) {
+        var dot = svgEl('circle', 'field-wash field-dot');
+        dot.setAttribute('cx', String(areaAt[area][0]));
+        dot.setAttribute('cy', String(areaAt[area][1]));
+        dot.setAttribute('r', '6');
+        dot.setAttribute('fill-opacity', String(opacity));
+        heat.appendChild(dot);
+      }
+    } catch (e) { /* getBBox throws on a detached SVG; the dot is a nicety */ }
+  }
+
   /* Shading is a second path over the land rather than a different fill
    * on it: fill-opacity works in every browser that can draw an SVG,
    * where mixing two custom properties into one colour does not. */
@@ -235,46 +261,13 @@
     var specs = [];
 
     areas.forEach(function (row) {
-      var base = areaPaths[row.area];
-      if (!base || !row.count) return;
+      if (!areaPaths[row.area] || !row.count) return;
       // Home gets its own wash below, at the top of the ramp. Painting
       // both would stack two translucent fills into something darker
       // than the darkest step.
       if (row.area === homeArea) return;
-      var wash = svgEl('path', 'field-wash');
-      wash.setAttribute('d', base.getAttribute('d'));
-      wash.setAttribute('fill-opacity', String(HEAT_OPACITY[heatLevel(row.count) - 1]));
-      heat.appendChild(wash);
-
-      // Sentosa and the offshore islands are a few pixels across, so the
-      // shading alone is invisible at exactly the districts most likely
-      // to be worth a trip. Give a small area a dot as well.
-      try {
-        var span = wash.getBBox();
-        if (Math.max(span.width, span.height) < 16) {
-          var dot = svgEl('circle', 'field-wash field-dot');
-          dot.setAttribute('cx', String(areaAt[row.area][0]));
-          dot.setAttribute('cy', String(areaAt[row.area][1]));
-          dot.setAttribute('r', '6');
-          dot.setAttribute('fill-opacity',
-            String(HEAT_OPACITY[heatLevel(row.count) - 1]));
-          heat.appendChild(dot);
-        }
-      } catch (e) { /* getBBox throws on a detached SVG; the dot is a nicety */ }
-
-      var isHome = row.area === homeArea;
-      var note = row.count + ' caught';
-      // Two labels on one district would sit exactly on top of each
-      // other, so the station's own district says both things at once.
-      // A station with no detections yet says nothing rather than
-      // "0 species", which reads as a fault.
-      if (isHome && station.species) note = station.species + ' species · ' + note;
-      specs.push({
-        area: row.area,
-        name: isHome ? 'Home' : row.area,
-        note: note,
-        rank: row.count + (isHome ? 1e6 : 0)
-      });
+      addWash(heat, row.area, HEAT_OPACITY[heatLevel(row.count) - 1]);
+      specs.push({ area: row.area, name: row.area, note: row.count + ' caught' });
     });
 
     /* The station hears more than anywhere else by a wide margin, so the
@@ -283,30 +276,34 @@
      * caught are different units, and pretending they share a scale would
      * flatten every field district to nothing. The label says which
      * number it is. */
-    if (homeArea && areaPaths[homeArea]) {
-      var homeWash = svgEl('path', 'field-wash field-home-wash');
-      homeWash.setAttribute('d', areaPaths[homeArea].getAttribute('d'));
-      homeWash.setAttribute('fill-opacity', String(HEAT_OPACITY[HEAT_OPACITY.length - 1]));
-      heat.appendChild(homeWash);
-    }
-
     if (homeArea) {
+      addWash(heat, homeArea, HEAT_OPACITY[HEAT_OPACITY.length - 1], 'field-home-wash');
+
       var mark = svgEl('circle', 'field-home');
       mark.setAttribute('cx', String(areaAt[homeArea][0]));
       mark.setAttribute('cy', String(areaAt[homeArea][1]));
       mark.setAttribute('r', '6');
       marks.appendChild(mark);
 
-      var already = specs.some(function (s) { return s.area === homeArea; });
-      if (!already) {
-        specs.push({
-          area: homeArea,
-          name: 'Home',
-          note: station.species ? station.species + ' species' : '',
-          rank: 1e6
-        });
-      }
+      // One card for the station's district, saying both things it knows:
+      // the species the station has heard, and any clips caught there. A
+      // station with no detections yet says nothing rather than "0
+      // species", which reads as a fault.
+      var caught = 0;
+      areas.forEach(function (row) { if (row.area === homeArea) caught = row.count; });
+      var note = station.species ? station.species + ' species' : '';
+      if (caught) note += (note ? ' · ' : '') + caught + ' caught';
+      specs.push({ area: homeArea, name: 'Home', note: note });
     }
+
+    // A card is now the only thing that names a district, so a tap on a
+    // quiet one has to answer too - otherwise most of the map is a dead
+    // tap that changes the list and says nothing about what you hit.
+    Object.keys(areaPaths).forEach(function (name) {
+      if (!specs.some(function (s) { return s.area === name; })) {
+        specs.push({ area: name, name: name, note: '' });
+      }
+    });
 
     var selectedPath = svgEl('path', 'field-selected');
     marks.appendChild(selectedPath);
@@ -315,14 +312,21 @@
     markSelection();
   }
 
-  /* Districts are small and their names are not, so labels collide. Place
-   * the busiest first and nudge each later one clear; anything with
-   * nowhere to go is dropped rather than stacked, since the shading and
-   * the list still say what it would have said. */
+  /* One card at a time, revealed by a tap, so there is nothing to collide
+   * with and nothing to place around.
+   *
+   * This used to lay every label out at once, busiest first, nudging each
+   * later one clear and dropping whatever had nowhere to go. The trouble
+   * is that a district is smaller than its own name: Geylang is 64px
+   * across on a phone and the Home card is 132px, so the card completely
+   * covered the shading it was there to annotate, and the station's own
+   * district - the darkest on the map - looked blank. The colour is the
+   * map; the card is the answer to a tap.
+   *
+   * Dropping on collision would now be actively wrong: the label with
+   * nowhere to go is the one you just tapped. */
   function placeLabels(specs) {
     var box = mapSvg.viewBox.baseVal;
-    var taken = [];
-    specs.sort(function (a, b) { return b.rank - a.rank; });
 
     specs.forEach(function (spec) {
       var node = el('button', 'field-label' + (spec.name === 'Home' ? ' field-label-home' : ''));
@@ -334,33 +338,41 @@
       mapLabels.appendChild(node);
 
       var anchor = areaAt[spec.area] || [0, 0];
-      var left = anchor[0] / box.width * 100;
-      var top = anchor[1] / box.height * 100;
-      node.style.left = left + '%';
+      node.style.left = (anchor[0] / box.width * 100) + '%';
+      node.style.top = (anchor[1] / box.height * 100) + '%';
 
+      // Measured while hidden, which is fine: opacity:0 still lays out,
+      // unlike display:none.
       var size = node.getBoundingClientRect();
       var host = mapLabels.getBoundingClientRect();
+      if (!host.width || !host.height || !size.width) return;
       var halfWidth = size.width / 2;
       var halfHeight = size.height / 2;
-      var centreX = host.width * left / 100;
 
-      var offsets = [0, -1, 1, -2, 2, -3, 3];
-      var placed = false;
-      for (var i = 0; i < offsets.length && !placed; i++) {
-        var centreY = host.height * top / 100 + offsets[i] * (size.height + 3);
-        var rect = [centreX - halfWidth, centreY - halfHeight,
-                    centreX + halfWidth, centreY + halfHeight];
-        if (rect[1] < 0 || rect[3] > host.height) continue;
-        var clash = taken.some(function (other) {
-          return rect[0] < other[2] && rect[2] > other[0]
-              && rect[1] < other[3] && rect[3] > other[1];
-        });
-        if (clash) continue;
-        taken.push(rect);
-        node.style.top = (centreY / host.height * 100) + '%';
-        placed = true;
+      /* Above the district, not on it. Centring the card was what buried
+       * the shading in the first place, and a card shown one at a time
+       * still covers a district smaller than itself - which is most of
+       * them. Sit it just clear of the top edge, or underneath when
+       * there is no room above, and pull it inside the map either way so
+       * a coastal district's card does not hang off. */
+      var span = null;
+      try { span = areaPaths[spec.area] ? areaPaths[spec.area].getBBox() : null; }
+      catch (e) { /* unrendered SVG; fall back to the anchor */ }
+      var scaleY = host.height / box.height;
+      var gap = 6;
+      var y;
+      if (span) {
+        y = span.y * scaleY - halfHeight - gap;
+        if (y - halfHeight < 0) y = (span.y + span.height) * scaleY + halfHeight + gap;
+      } else {
+        y = anchor[1] * scaleY;
       }
-      if (!placed) node.remove();
+
+      var x = Math.min(Math.max(host.width * anchor[0] / box.width, halfWidth),
+                       Math.max(host.width - halfWidth, halfWidth));
+      y = Math.min(Math.max(y, halfHeight), Math.max(host.height - halfHeight, halfHeight));
+      node.style.left = (x / host.width * 100) + '%';
+      node.style.top = (y / host.height * 100) + '%';
     });
   }
 
@@ -885,7 +897,8 @@
     var head = el('div', 'field-headrow');
     head.appendChild(el('p', 'field-lead',
       'Where the birds have been heard: the station at home, and anything '
-      + 'recorded out in the field. Tap a district to see just those.'));
+      + 'recorded out in the field. Tap a district to name it and see just '
+      + 'those.'));
     head.appendChild(record);
     wrap.appendChild(head);
 
