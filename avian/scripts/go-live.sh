@@ -124,6 +124,30 @@ else
     "not installed - sudo $REPO/scripts/install_submission_worker.sh"
 fi
 
+# ---- where the station thinks it is -----------------------------------
+# Not a pass or a fail: the coordinates are the owner's to set, and the
+# occurrence filter tolerates a few kilometres. The map does not - it puts
+# Home in whichever district the coordinates land in, so a rough position
+# set years ago shows up as a station in the wrong part of town.
+where=$(php -r '
+  require "'"$REPO"'/avian/api/places.php";
+  $conf = "/etc/birdnet/birdnet.conf";
+  $get = static function (string $key) use ($conf): ?float {
+      if (!is_readable($conf)) return null;
+      foreach (file($conf, FILE_IGNORE_NEW_LINES) as $line) {
+          if (preg_match("/^\s*" . $key . "\s*=\s*\"?([^\"]*)\"?\s*$/", $line, $m)) {
+              return is_numeric(trim($m[1])) ? (float)trim($m[1]) : null;
+          }
+      }
+      return null;
+  };
+  $lat = $get("LATITUDE"); $lon = $get("LONGITUDE");
+  if ($lat === null || $lon === null) { echo "no coordinates in birdnet.conf"; exit; }
+  $area = avian_area_at($lat, $lon);
+  printf("%s", $area ?? "nowhere this map knows about");
+' 2>/dev/null)
+say "the station sits in" "${where:-unknown}"
+
 # ---- who may record ---------------------------------------------------
 if "$REPO/avian/scripts/access-setup.sh" check >/dev/null 2>&1; then
   good "Cloudflare Access identities may record"
