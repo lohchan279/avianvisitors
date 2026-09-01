@@ -164,9 +164,20 @@ if [ -r /etc/caddy/avian-site-overlay.caddy ] \
 fi
 
 echo
+if [ "$APPLY" = 1 ]; then
+  # Unconditional, and above the verdict. The token moved the moment we
+  # bumped it, so from then on the edge is serving a stale index.html -
+  # and an unrelated check failing below is no reason to swallow the one
+  # instruction that decides whether anybody sees the new frontend. This
+  # reminder used to live in the all-clear branch, where a single
+  # unrelated NO hid it and the deploy looked done while every visitor
+  # kept the old scripts.
+  echo "Now purge the Cloudflare cache for the public site. Until you do,"
+  echo "visitors keep the cached index.html and with it the old scripts."
+  echo
+fi
 if [ "$FAILED" = 0 ]; then
-  echo "live. Purge the Cloudflare cache for the public site so visitors get"
-  echo "the new token rather than a cached index.html."
+  echo "live."
 else
   echo "$FAILED check(s) failed; each line above says what to run."
   exit 1
