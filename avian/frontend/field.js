@@ -772,8 +772,35 @@
     }).catch(function (e) { showError(String(e.message || e)); });
   }
 
+  /* The bird, drawn. A name is a claim the reader cannot check; the
+   * picture is one they can - which is the whole point on the suggestion
+   * screen, and just as welcome on a confirmed catch.
+   *
+   * cutout.php answers for any species the atlas can draw and 404s for
+   * the rest, so a species whose illustration has not been generated yet
+   * falls back to the nest the atlas uses rather than a broken image. */
+  function speciesFigure(sci, com) {
+    var figure = el('div', 'field-guess-figure');
+    var art = document.createElement('img');
+    art.className = 'field-guess-art';
+    art.alt = com || sci || 'the bird';
+    art.decoding = 'async';
+    art.src = './avian/api/cutout.php?sci=' + encodeURIComponent(sci || '')
+      + (com ? '&com=' + encodeURIComponent(com) : '')
+      + (ASSET_VERSION ? '&v=' + encodeURIComponent(ASSET_VERSION) : '');
+    art.addEventListener('error', function () {
+      if (art.dataset.fellBack === 'true') return;
+      art.dataset.fellBack = 'true';
+      art.src = './nest-eggs.webp';
+      art.alt = 'No illustration yet for ' + (com || sci);
+    });
+    figure.appendChild(art);
+    return figure;
+  }
+
   function showCaught(result) {
     var wrap = el('div', 'field-step');
+    wrap.appendChild(speciesFigure(result.sci, result.com));
     wrap.appendChild(el('p', 'field-eyebrow', 'caught'
       + (result.place ? ' at ' + result.place : '')));
     wrap.appendChild(el('h3', 'field-caught', result.com || result.sci));
@@ -852,22 +879,7 @@
      * they can. cutout.php answers for any species the atlas can draw and
      * 404s for the rest, so a species with no illustration yet falls back
      * to the same nest the atlas uses rather than a broken image. */
-    var figure = el('div', 'field-guess-figure');
-    var art = document.createElement('img');
-    art.className = 'field-guess-art';
-    art.alt = chosen.com || chosen.sci || 'the suggested bird';
-    art.decoding = 'async';
-    art.src = './avian/api/cutout.php?sci=' + encodeURIComponent(chosen.sci || '')
-      + (chosen.com ? '&com=' + encodeURIComponent(chosen.com) : '')
-      + (ASSET_VERSION ? '&v=' + encodeURIComponent(ASSET_VERSION) : '');
-    art.addEventListener('error', function () {
-      if (art.dataset.fellBack === 'true') return;
-      art.dataset.fellBack = 'true';
-      art.src = './nest-eggs.webp';
-      art.alt = 'No illustration yet for ' + (chosen.com || chosen.sci);
-    });
-    figure.appendChild(art);
-    wrap.appendChild(figure);
+    wrap.appendChild(speciesFigure(chosen.sci, chosen.com));
 
     wrap.appendChild(el('p', 'field-eyebrow', 'most likely'));
     wrap.appendChild(el('h3', 'field-caught', chosen.com || chosen.sci));
