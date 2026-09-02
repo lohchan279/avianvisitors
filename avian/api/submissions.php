@@ -369,6 +369,64 @@ if ($action === 'reject') {
     exit;
 }
 
+// --------------------------------------------------------------- confirm
+// A person stood there and heard it. Below the bar the station will not
+// put a name to a clip on its own, and it is right not to - but the
+// listener knows something the model does not, and this is how they say
+// so. The row becomes a real catch and joins the map.
+//
+// Only a species the station actually offered can be chosen. Accepting a
+// name from the request body would make the map free text, and the whole
+// point of the confidence bar is that nothing reaches it unexamined.
+if ($action === 'confirm') {
+    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') fail('confirm requires POST', 405);
+    $body = json_body();
+    $id = (int)($body['id'] ?? 0);
+    if ($id <= 0) fail('confirm needs id');
+    $sci = trim((string)($body['sci'] ?? ''));
+    if ($sci === '') fail('confirm needs sci');
+
+    $stmt = $pdo->prepare('SELECT Status, Candidates FROM submissions WHERE Id = :id');
+    $stmt->execute([':id' => $id]);
+    $row = $stmt->fetch();
+    if (!$row) fail('no such submission', 404);
+    // Only an unsure row is the listener's to settle. A confirmed one is
+    // already on the map and a rejected one has had its audio dropped.
+    if ($row['Status'] !== 'unsure') {
+        fail('only an unsure recording can be confirmed', 409);
+    }
+
+    $chosen = null;
+    foreach ((array)json_decode((string)$row['Candidates'], true) as $c) {
+        if (is_array($c) && isset($c['sci']) && (string)$c['sci'] === $sci) {
+            $chosen = $c;
+            break;
+        }
+    }
+    if ($chosen === null) fail('that species was not one of the suggestions');
+
+    $update = $pdo->prepare('UPDATE submissions
+                             SET Status = :s, Sci_Name = :sci, Com_Name = :com,
+                                 Confidence = :conf
+                             WHERE Id = :id');
+    $update->execute([
+        ':s'    => 'confirmed',
+        ':sci'  => $sci,
+        ':com'  => isset($chosen['com']) ? (string)$chosen['com'] : $sci,
+        // The model's own score, kept as it was. A row confirmed by a
+        // listener at 13% should still read as 13% - the map records what
+        // the station heard, and who vouched for it, not a borrowed
+        // certainty.
+        ':conf' => isset($chosen['conf']) ? (float)$chosen['conf'] : null,
+        ':id'   => $id,
+    ]);
+
+    echo json_encode(['ok' => true, 'id' => $id, 'status' => 'confirmed',
+                      'sci' => $sci,
+                      'com' => isset($chosen['com']) ? (string)$chosen['com'] : $sci]);
+    exit;
+}
+
 // ------------------------------------------------------------------ list
 if ($action === 'list') {
     $limit = (int)($_GET['limit'] ?? 100);

@@ -15,10 +15,15 @@
  * neighbourhood is the honest resolution for a phone recording anyway.
  *
  * A recorder. Record a few seconds wherever you are and the station's own
- * BirdNET names it. It does not ask which of five candidates it was: the
- * person holding the phone almost never knows, and asking turns a guess
- * into a recorded fact. The model either clears the bar on its own or the
- * station says it could not make that one out.
+ * BirdNET names it. Above the confidence bar it names the bird and the
+ * catch goes on the map by itself.
+ *
+ * Below the bar it stops short of naming it, and shows its best guess
+ * with the illustration, because the person holding the phone was
+ * standing there and can recognise a bird the model only half heard.
+ * They can accept it, pick one of the runners-up, or ignore it. Nothing
+ * reaches the map on a low score alone - it takes a human saying yes,
+ * which is the one thing that makes a guess worth recording.
  *
  * A list. What has been caught, newest first, with the audio - so a
  * morning's walk can be found again in the evening.
@@ -35,6 +40,14 @@
   var OWN_SRC = (document.currentScript && document.currentScript.src) || '';
 
   var API = './avian/api/submissions.php';
+  /* The cache token this copy of the site was served under, taken from the
+   * script tag above. The map data and the illustrations are both
+   * addressed by it, so a stale one shows a stale drawing. */
+  var ASSET_VERSION = (function () {
+    var m = /[?&]v=([^&]*)/.exec(OWN_SRC);
+    return m && m[1] ? decodeURIComponent(m[1]) : '';
+  })();
+
   var MAX_SECONDS = 15;      // BirdNET works in 3s windows; 15 gives it five
   var POLL_MS = 1500;
   var POLL_LIMIT = 60;       // ~90s before we stop waiting on the worker
@@ -143,9 +156,8 @@
     if (window.AVIAN_SG_MAP) return Promise.resolve(window.AVIAN_SG_MAP);
     if (mapLoading) return mapLoading;
     mapLoading = new Promise(function (resolve, reject) {
-      var version = /[?&]v=([^&]*)/.exec(OWN_SRC);
       var tag = document.createElement('script');
-      tag.src = './sg-map.js' + (version ? '?v=' + version[1] : '');
+      tag.src = './sg-map.js' + (ASSET_VERSION ? '?v=' + ASSET_VERSION : '');
       tag.onload = function () {
         window.AVIAN_SG_MAP ? resolve(window.AVIAN_SG_MAP)
                             : reject(new Error('the map data did not load'));
@@ -768,7 +780,16 @@
     if (result.sci && result.com && result.sci !== result.com) {
       wrap.appendChild(el('p', 'field-caught-sci', result.sci));
     }
-    if (result.conf != null) {
+    if (result.vouched) {
+      // The score stays visible because the map keeps it, but it is no
+      // longer the reason this is here - a bare "5% sure" under a bird
+      // somebody just identified themselves reads as the station
+      // doubting them.
+      wrap.appendChild(el('p', 'field-note', 'You identified this one'
+        + (result.conf != null
+           ? ' - the station only scored it ' + Math.round(result.conf * 100) + '%'
+           : '') + '.'));
+    } else if (result.conf != null) {
       wrap.appendChild(el('p', 'field-note',
         Math.round(result.conf * 100) + '% sure'));
     }
@@ -818,46 +839,103 @@
    * sighting. But it is worth telling the person who made it.
    *
    * The score is shown, and shown as the hedge it is. */
-  function showUnsure(result) {
+  function showUnsure(result, pick) {
     var near = (result && result.near) || [];
     if (!near.length) return showNothingHeard(result);
 
-    var top = near[0];
-    var rest = near.slice(1);
+    var chosen = pick || near[0];
+    var others = near.filter(function (row) { return row.sci !== chosen.sci; });
     var wrap = el('div', 'field-step');
 
+    /* The picture is the point. A name at 13% is a claim the listener has
+     * no way to check; the bird they were just looking at is something
+     * they can. cutout.php answers for any species the atlas can draw and
+     * 404s for the rest, so a species with no illustration yet falls back
+     * to the same nest the atlas uses rather than a broken image. */
+    var figure = el('div', 'field-guess-figure');
+    var art = document.createElement('img');
+    art.className = 'field-guess-art';
+    art.alt = chosen.com || chosen.sci || 'the suggested bird';
+    art.decoding = 'async';
+    art.src = './avian/api/cutout.php?sci=' + encodeURIComponent(chosen.sci || '')
+      + (chosen.com ? '&com=' + encodeURIComponent(chosen.com) : '')
+      + (ASSET_VERSION ? '&v=' + encodeURIComponent(ASSET_VERSION) : '');
+    art.addEventListener('error', function () {
+      if (art.dataset.fellBack === 'true') return;
+      art.dataset.fellBack = 'true';
+      art.src = './nest-eggs.webp';
+      art.alt = 'No illustration yet for ' + (chosen.com || chosen.sci);
+    });
+    figure.appendChild(art);
+    wrap.appendChild(figure);
+
     wrap.appendChild(el('p', 'field-eyebrow', 'most likely'));
-    wrap.appendChild(el('h3', 'field-caught', top.com || top.sci));
-    if (top.sci && top.com && top.sci !== top.com) {
-      wrap.appendChild(el('p', 'field-caught-sci', top.sci));
+    wrap.appendChild(el('h3', 'field-caught', chosen.com || chosen.sci));
+    if (chosen.sci && chosen.com && chosen.sci !== chosen.com) {
+      wrap.appendChild(el('p', 'field-caught-sci', chosen.sci));
     }
     wrap.appendChild(el('p', 'field-note',
-      'Only ' + Math.round((top.conf || 0) * 100) + '% sure, so this is a '
-      + 'suggestion rather than a match, and it is not added to the map. '
-      + 'Get closer or record again to be certain.'));
+      'Only ' + Math.round((chosen.conf || 0) * 100) + '% sure, so the station '
+      + 'will not put this on the map by itself. You were there - if that is '
+      + 'the bird, say so.'));
 
-    if (rest.length) {
+    var yes = el('button', 'field-primary', 'yes, that was it');
+    yes.type = 'button';
+    yes.addEventListener('click', function () {
+      yes.disabled = true;
+      yes.textContent = 'saving...';
+      api('confirm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: result.id, sci: chosen.sci })
+      }).then(function (j) {
+        showCaught({ id: result.id, sci: j.sci, com: j.com,
+                     conf: chosen.conf, place: result.place, vouched: true });
+      }).catch(function (e) {
+        yes.disabled = false;
+        yes.textContent = 'yes, that was it';
+        // Inline, not showProblem: that writes into the map behind this
+        // sheet, where nobody with the sheet open can read it. And not
+        // showError either, which would replace the suggestion the
+        // failure is about.
+        var said = wrap.querySelector('.field-confirm-failed');
+        if (!said) {
+          said = el('p', 'field-note field-problem field-confirm-failed');
+          yes.insertAdjacentElement('afterend', said);
+        }
+        said.textContent = 'Could not save that: ' + String(e.message || e);
+      });
+    });
+    wrap.appendChild(yes);
+
+    /* The alternatives are the other half of "did it get the right bird".
+     * Tapping one redraws this screen around it - same picture treatment,
+     * same confirm - so the choice is made by looking, not by trusting
+     * the ranking. */
+    if (others.length) {
       var list = el('div', 'field-near');
-      list.appendChild(el('p', 'field-eyebrow', 'or possibly'));
-      rest.forEach(function (row) {
-        var line = el('div', 'field-near-row');
+      list.appendChild(el('p', 'field-eyebrow', 'or was it one of these'));
+      others.forEach(function (row) {
+        var line = el('button', 'field-near-row field-near-pick');
+        line.type = 'button';
         line.appendChild(el('span', 'field-near-name', row.com || row.sci || 'unknown'));
         line.appendChild(el('span', 'field-near-conf',
           Math.round((row.conf || 0) * 100) + '%'));
+        line.addEventListener('click', function () { showUnsure(result, row); });
         list.appendChild(line);
       });
       wrap.appendChild(list);
     }
 
-    var read = el('button', 'field-primary', 'read about it');
+    var read = el('button', 'field-secondary', 'read about it');
     read.type = 'button';
     read.addEventListener('click', function () {
       closeSheet();
-      if (top.sci) location.hash = '#sci=' + encodeURIComponent(top.sci);
+      if (chosen.sci) location.hash = '#sci=' + encodeURIComponent(chosen.sci);
     });
     wrap.appendChild(read);
 
-    var again = el('button', 'field-secondary', 'record again');
+    var again = el('button', 'field-link', 'none of these - record again');
     again.type = 'button';
     again.addEventListener('click', startRecording);
     wrap.appendChild(again);

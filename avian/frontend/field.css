@@ -272,6 +272,39 @@
   color: var(--ink-soft, #908576);
   flex: 0 0 auto;
 }
+/* The suggested bird, big enough to recognise from across a garden. */
+.field-guess-figure {
+  display: grid;
+  place-items: center;
+  min-height: 150px;
+  margin: 4px 0 14px;
+  padding: 10px;
+  border-radius: 14px;
+  background: var(--paper-2, #f4f2ec);
+}
+.field-guess-art {
+  max-width: 100%;
+  max-height: 190px;
+  object-fit: contain;
+}
+
+/* An alternative is a choice, so it looks like one. */
+.field-near-pick {
+  width: 100%;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 8px;
+}
+.field-near-pick:hover { background: var(--paper-3, #e8e6df); }
+.field-near-pick:focus-visible {
+  outline: 2px solid var(--accent, #4a3f31);
+  outline-offset: 2px;
+}
+
 .field-near-reason {
   margin: 14px 0 4px;
   font: 10px/1.5 ui-monospace, "SF Mono", Menlo, monospace;

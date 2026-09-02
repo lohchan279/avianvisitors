@@ -63,6 +63,13 @@ MIN_CONFIDENCE = 0.05
 # What the top score has to reach before the station will put a name to a
 # clip. Nothing confirms it afterwards, so this is the whole filter.
 DEFAULT_ACCEPT = 0.5
+# How long a clip the station could not name is kept so the person who
+# recorded it can hear it back and settle it themselves. After this the
+# audio goes and the row keeps its candidates. A Pi has a small disk, and
+# the recordings the station makes on its own matter more than a guess
+# nobody came back to.
+UNSURE_KEEP_DAYS = 14
+SWEEP_EVERY_S = 3600
 
 
 def conf_value(key: str, fallback: str = "") -> str:
@@ -240,6 +247,41 @@ def accept_threshold() -> float:
     return value if 0 < value <= 1 else DEFAULT_ACCEPT
 
 
+def sweep_unsettled_audio(db: sqlite3.Connection, extracted: Path) -> int:
+    """Drop the audio behind unsure rows nobody came back to.
+
+    Keeping the clip is what lets the listener confirm a low-scoring
+    guess, and most will be confirmed or forgotten within a day or two.
+    Forgotten is the common case, and a Pi has a small disk - without a
+    bound this quietly fills it, which breaks the recordings the station
+    is actually here to make. The row and its candidates stay; only the
+    audio goes, exactly as it always did on this path, just later.
+    """
+    cutoff = (datetime.datetime.now(datetime.timezone.utc)
+              - datetime.timedelta(days=UNSURE_KEEP_DAYS)).isoformat()
+    try:
+        rows = db.execute(
+            "SELECT Id, Audio FROM submissions "
+            "WHERE Status = 'unsure' AND Audio IS NOT NULL AND Audio != '' "
+            "AND Created < ?", (cutoff,)).fetchall()
+    except sqlite3.Error as e:
+        log.warning("could not look for old unsure clips: %s", e)
+        return 0
+
+    swept = 0
+    for row in rows:
+        path = extracted / row["Audio"]
+        if not path.exists():
+            continue
+        discard_audio(path)
+        if not path.exists():
+            swept += 1
+    if swept:
+        log.info("dropped the audio of %d unsure clip(s) older than %d days",
+                 swept, UNSURE_KEEP_DAYS)
+    return swept
+
+
 def discard_audio(src: Path) -> None:
     """Drop a clip nobody can use, and never let that failure matter.
 
@@ -293,9 +335,13 @@ def process(db: sqlite3.Connection, row: sqlite3.Row, extracted: Path) -> None:
                     else (empty_reason or "nothing heard"))
             if best and empty_reason:
                 near += f"; {empty_reason}"
+            # The audio stays. Below the bar the station will not name the
+            # clip on its own, but the person who recorded it can - they
+            # were standing there - and they cannot do that having never
+            # heard it back. Kept until they settle it, or until
+            # UNSURE_KEEP_DAYS gives up on their behalf.
             finish(db, sub_id, "unsure", candidates=candidates, error=near)
             settled = True
-            discard_audio(src)
             log.info("#%s unsure: %s", sub_id, near)
             return
 
@@ -352,6 +398,7 @@ def main() -> int:
             return 0
         log.info("waiting for the submissions table to appear")
 
+    last_sweep = 0.0
     while True:
         try:
             row = claim_one(db) if db.execute(
@@ -365,7 +412,13 @@ def main() -> int:
             process(db, row, extracted)
             continue                      # drain before sleeping
         if args.once:
+            sweep_unsettled_audio(db, extracted)
             return 0
+        # Only when the queue is empty, and at most hourly: this walks
+        # rows, and identifying a waiting clip matters more than tidying.
+        if time.monotonic() - last_sweep >= SWEEP_EVERY_S:
+            last_sweep = time.monotonic()
+            sweep_unsettled_audio(db, extracted)
         time.sleep(args.interval)
 
 
