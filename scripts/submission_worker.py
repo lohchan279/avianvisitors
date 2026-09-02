@@ -157,7 +157,16 @@ def analyse(wav: Path, lat: float, lon: float, week: int) -> list[dict]:
     # floor, and a clip the range model rejected wholesale because of where
     # or when it thinks the recording was made. Reading them apart needed
     # the worker's log, on the station, over SSH. The row can just say.
-    if candidates:
+    if candidates and dropped:
+        # The interesting case, and the one that reads as a bug. The model
+        # recognised something confidently, the range model said it does
+        # not occur here in this week, and what survives is a handful of
+        # local birds scoring badly against a sound that is not any of
+        # them. Without this the row shows only the poor survivors and the
+        # recording looks like a failure rather than a rejection.
+        reason = (f"{dropped} of {scored} rejected as out of range for "
+                  f"{lat:.3f},{lon:.3f} in week {week}")
+    elif candidates:
         reason = ""
     elif seen == 0:
         reason = "the model scored nothing in the clip"
@@ -282,6 +291,8 @@ def process(db: sqlite3.Connection, row: sqlite3.Row, extracted: Path) -> None:
             # nearly said - but not the audio, which nobody can use.
             near = (f"best {best['com']} {best['conf']:.2f} < {bar:.2f}" if best
                     else (empty_reason or "nothing heard"))
+            if best and empty_reason:
+                near += f"; {empty_reason}"
             finish(db, sub_id, "unsure", candidates=candidates, error=near)
             settled = True
             discard_audio(src)
