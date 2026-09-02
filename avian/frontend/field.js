@@ -807,20 +807,39 @@
    * the only conclusion available to somebody standing under a singing
    * bird is that the feature does not work. The station has always
    * recorded what it nearly said; this is the first thing to show it. */
+  /* Below the bar is a guess, not a refusal.
+   *
+   * Somebody stood there, heard a bird, and deliberately recorded it. The
+   * station's best answer is the best answer anyone has - there is no
+   * second opinion to appeal to - so withholding it and saying "could not
+   * make that one out" threw away the only information in the room. It
+   * still does not go on the map: the row stays unsure and the list shows
+   * only confirmed catches, because a 13% guess is not a record of a
+   * sighting. But it is worth telling the person who made it.
+   *
+   * The score is shown, and shown as the hedge it is. */
   function showUnsure(result) {
     var near = (result && result.near) || [];
-    var wrap = el('div', 'field-step');
-    wrap.appendChild(el('h3', 'field-step-title', 'Could not make that one out'));
-    wrap.appendChild(el('p', 'field-lead', near.length
-      ? 'The station had a guess but was not confident enough to name it. '
-        + 'Get closer if you can, or wait for the bird to call again.'
-      : 'Nothing in that clip scored high enough to put a name to. Get closer '
-        + 'if you can, or wait for the bird to call again.'));
+    if (!near.length) return showNothingHeard(result);
 
-    if (near.length) {
+    var top = near[0];
+    var rest = near.slice(1);
+    var wrap = el('div', 'field-step');
+
+    wrap.appendChild(el('p', 'field-eyebrow', 'most likely'));
+    wrap.appendChild(el('h3', 'field-caught', top.com || top.sci));
+    if (top.sci && top.com && top.sci !== top.com) {
+      wrap.appendChild(el('p', 'field-caught-sci', top.sci));
+    }
+    wrap.appendChild(el('p', 'field-note',
+      'Only ' + Math.round((top.conf || 0) * 100) + '% sure, so this is a '
+      + 'suggestion rather than a match, and it is not added to the map. '
+      + 'Get closer or record again to be certain.'));
+
+    if (rest.length) {
       var list = el('div', 'field-near');
-      list.appendChild(el('p', 'field-eyebrow', 'closest matches'));
-      near.forEach(function (row) {
+      list.appendChild(el('p', 'field-eyebrow', 'or possibly'));
+      rest.forEach(function (row) {
         var line = el('div', 'field-near-row');
         line.appendChild(el('span', 'field-near-name', row.com || row.sci || 'unknown'));
         line.appendChild(el('span', 'field-near-conf',
@@ -828,16 +847,35 @@
         list.appendChild(line);
       });
       wrap.appendChild(list);
-    } else if (result && result.error) {
-      /* No candidates at all is a different fault from a low-scoring
-       * guess, and the two used to render the same sentence - so this
-       * screen could not be told apart from the one before the near
-       * misses existed, and neither could a station that had not
-       * deployed yet. The worker's own reason is short and true; show
-       * it rather than leaving the reader to infer. */
-      wrap.appendChild(el('p', 'field-near-reason', 'station: ' + result.error));
     }
 
+    var read = el('button', 'field-primary', 'read about it');
+    read.type = 'button';
+    read.addEventListener('click', function () {
+      closeSheet();
+      if (top.sci) location.hash = '#sci=' + encodeURIComponent(top.sci);
+    });
+    wrap.appendChild(read);
+
+    var again = el('button', 'field-secondary', 'record again');
+    again.type = 'button';
+    again.addEventListener('click', startRecording);
+    wrap.appendChild(again);
+    setSheet(wrap);
+  }
+
+  /* The other half of the old screen: nothing scored at all, so there is
+   * genuinely nothing to suggest. The worker's own reason is short and
+   * true, and distinguishes a silent clip from a filtered one. */
+  function showNothingHeard(result) {
+    var wrap = el('div', 'field-step');
+    wrap.appendChild(el('h3', 'field-step-title', 'Could not make that one out'));
+    wrap.appendChild(el('p', 'field-lead',
+      'Nothing in that clip scored high enough to put a name to. Get closer '
+      + 'if you can, or wait for the bird to call again.'));
+    if (result && result.error) {
+      wrap.appendChild(el('p', 'field-near-reason', 'station: ' + result.error));
+    }
     var again = el('button', 'field-primary', 'try again');
     again.type = 'button';
     again.addEventListener('click', startRecording);
