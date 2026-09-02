@@ -33,6 +33,7 @@ from PIL import Image, ImageDraw, ImageFilter
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import pregen  # noqa: E402  (reuses gen_one + the reference machinery)
+import auto_illustrate  # noqa: E402  (one definition of where the key lives)
 
 ILLUS = HERE.parent / "assets" / "illustrations"
 RAW = ILLUS / "raw"
@@ -137,9 +138,15 @@ def main() -> int:
                     help="seconds between the two Gemini calls")
     args = ap.parse_args()
 
-    key = os.environ.get("GEMINI_API_KEY", "")
+    # generate.php puts the key in our environment, so that path is
+    # unchanged. Falling back to birdnet.conf is for running this by hand:
+    # without it the only way to re-render one bird is to type the key on
+    # a command line, where it lands in the shell history and in ps for
+    # anybody on the machine to read.
+    key = auto_illustrate.gemini_key()
     if not key:
-        print("error: GEMINI_API_KEY required in the environment", file=sys.stderr)
+        print("error: no GEMINI_API_KEY in the environment or birdnet.conf",
+              file=sys.stderr)
         return 2
 
     # generate.php holds this lock while spawning us. Blocking here is
