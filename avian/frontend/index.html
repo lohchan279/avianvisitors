@@ -15,6 +15,11 @@ function dflt(){try{var c=window.AVIAN_LOCAL&&window.AVIAN_LOCAL.themeDefault;re
 function systemTheme(){try{return window.matchMedia&&window.matchMedia(q).matches?'dark':'light';}catch(e){return'light';}}
 function preference(){try{var v=localStorage.getItem('bird:theme:v2');if(v==='auto'||v==='light'||v==='dark')return v;var old=localStorage.getItem('bird:theme');return old==='light'||old==='dark'?old:dflt();}catch(e){return dflt();}}
 var p=preference();d.setAttribute('data-theme',p==='light'||p==='dark'?p:systemTheme());})();</script>
+<!-- TEMPORARY: picks one of two candidate Classic Atlas card sizings, for
+     comparing on a phone. Inert without ?cards= in the URL. The rules live
+     at the end of styles.css; delete both together once one is chosen. -->
+<script>(function(){try{var c=new URLSearchParams(location.search).get('cards');
+if(c==='compact'||c==='short')document.documentElement.setAttribute('data-cards',c);}catch(e){}})();</script>
 <link rel="stylesheet" href="./styles.css?v=r46">
 <link rel="stylesheet" href="./field.css?v=r46">
   <link rel="stylesheet" href="./stamps.css?v=r46">
