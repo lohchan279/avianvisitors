@@ -169,8 +169,16 @@ def try_fork_download(slug: str, fork_index: dict[str, str]) -> bool:
 
 def generate_with_pregen(species_list: list[tuple[str, str]], key: str) -> int:
     stdin_lines = "\n".join(f"{sci}|{com}" for sci, com in species_list)
-    cmd = [PYTHON, str(SCRIPT_DIR / "pregen.py"), "--stdin", "--gemini-key", key, "--no-refs"]
-    result = subprocess.run(cmd, input=stdin_lines, capture_output=True, text=True)
+    cmd = [PYTHON, str(SCRIPT_DIR / "pregen.py"), "--stdin", "--no-refs"]
+    # Through the environment rather than --gemini-key, which pregen's own
+    # usage calls the preferred way and which keeps the key out of the
+    # process list: argv is world-readable in /proc, so any local account
+    # could read it off ps for as long as a generation runs - and a
+    # generation can run for minutes while it waits out a rate limit.
+    # generate.php already hands it over this way.
+    environment = dict(os.environ, GEMINI_API_KEY=key)
+    result = subprocess.run(cmd, input=stdin_lines, capture_output=True,
+                            text=True, env=environment)
     if result.stdout:
         print(result.stdout, end="")
     if result.stderr:
