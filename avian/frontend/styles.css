@@ -4049,7 +4049,21 @@ body.av-local #dd-items  { display: block; }
   grid-template-columns: minmax(0, 1fr);
   gap: 0;
   border-radius: 9px;
+  /* Only the stamp's *column* was being removed. Its height stayed: the
+     block is 128px tall by default and 142-148px on a phone, and those
+     numbers exist to fit a stamp. With no stamp in it, that left a band
+     of empty paper under the name taller than the name itself.
+     Size to what it actually holds, with no floor of its own - the
+     padding and the type set the height, and on a short viewport, where
+     the stamped block is deliberately squeezed to 78px, a floor here
+     would make the stamp-less one the taller of the two. */
+  flex: 0 0 auto;
+  min-height: 0;
 }
+/* The stats sit at the bottom of a tall block on purpose. Once the block
+   is only as tall as its contents there is no bottom to sit at, and the
+   margin would push them away from the name they belong to. */
+#postcard-modal[data-atlas-source="classic"] .postcard-stats { margin-top: 10px; }
 
 @media (max-width: 700px) {
   #atlasGrid[data-layout="classic"],
