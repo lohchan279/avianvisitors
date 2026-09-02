@@ -338,8 +338,6 @@
    * Dropping on collision would now be actively wrong: the label with
    * nowhere to go is the one you just tapped. */
   function placeLabels(specs) {
-    var box = mapSvg.viewBox.baseVal;
-
     specs.forEach(function (spec) {
       var node = el('button', 'field-label' + (spec.name === 'Home' ? ' field-label-home' : ''));
       node.type = 'button';
@@ -348,44 +346,62 @@
       if (spec.note) node.appendChild(el('span', 'field-label-count', spec.note));
       node.addEventListener('click', function () { select(spec.area); });
       mapLabels.appendChild(node);
-
-      var anchor = areaAt[spec.area] || [0, 0];
-      node.style.left = (anchor[0] / box.width * 100) + '%';
-      node.style.top = (anchor[1] / box.height * 100) + '%';
-
-      // Measured while hidden, which is fine: opacity:0 still lays out,
-      // unlike display:none.
-      var size = node.getBoundingClientRect();
-      var host = mapLabels.getBoundingClientRect();
-      if (!host.width || !host.height || !size.width) return;
-      var halfWidth = size.width / 2;
-      var halfHeight = size.height / 2;
-
-      /* Above the district, not on it. Centring the card was what buried
-       * the shading in the first place, and a card shown one at a time
-       * still covers a district smaller than itself - which is most of
-       * them. Sit it just clear of the top edge, or underneath when
-       * there is no room above, and pull it inside the map either way so
-       * a coastal district's card does not hang off. */
-      var span = null;
-      try { span = areaPaths[spec.area] ? areaPaths[spec.area].getBBox() : null; }
-      catch (e) { /* unrendered SVG; fall back to the anchor */ }
-      var scaleY = host.height / box.height;
-      var gap = 6;
-      var y;
-      if (span) {
-        y = span.y * scaleY - halfHeight - gap;
-        if (y - halfHeight < 0) y = (span.y + span.height) * scaleY + halfHeight + gap;
-      } else {
-        y = anchor[1] * scaleY;
-      }
-
-      var x = Math.min(Math.max(host.width * anchor[0] / box.width, halfWidth),
-                       Math.max(host.width - halfWidth, halfWidth));
-      y = Math.min(Math.max(y, halfHeight), Math.max(host.height - halfHeight, halfHeight));
-      node.style.left = (x / host.width * 100) + '%';
-      node.style.top = (y / host.height * 100) + '%';
+      // Where it goes is worked out when it is shown - see positionLabel.
     });
+  }
+
+  /* Measured when it is revealed, not when it is built.
+   *
+   * Every district gets a label now, and this used to place all of them
+   * up front: write a style, read a rect, read a bBox, write a style -
+   * fifty-five times, on every refresh. Each read after a write forces
+   * the browser to redo layout it has just been told is stale, so the
+   * cost is not fifty-five measurements but fifty-five layouts, and on a
+   * phone that is felt. Fifty-four of them were for a card nobody was
+   * going to look at.
+   *
+   * One label is visible at a time, so one is all that needs placing. */
+  function positionLabel(node) {
+    if (!node || node.dataset.placed === 'true') return;
+    var anchor = areaAt[node.dataset.area];
+    var box = mapSvg && mapSvg.viewBox && mapSvg.viewBox.baseVal;
+    if (!anchor || !box || !box.width || !box.height) return;
+
+    var left = anchor[0] / box.width * 100;
+    node.style.left = left + '%';
+    node.style.top = (anchor[1] / box.height * 100) + '%';
+
+    var size = node.getBoundingClientRect();
+    var host = mapLabels.getBoundingClientRect();
+    if (!host.width || !host.height || !size.width) return;
+    var halfWidth = size.width / 2;
+    var halfHeight = size.height / 2;
+
+    /* Above the district, not on it. Centring the card was what buried
+     * the shading in the first place, and a card shown one at a time
+     * still covers a district smaller than itself - which is most of
+     * them. Sit it just clear of the top edge, or underneath when there
+     * is no room above, and pull it inside the map either way so a
+     * coastal district's card does not hang off. */
+    var span = null;
+    try { span = areaPaths[node.dataset.area] ? areaPaths[node.dataset.area].getBBox() : null; }
+    catch (e) { /* unrendered SVG; fall back to the anchor */ }
+    var scaleY = host.height / box.height;
+    var gap = 6;
+    var y;
+    if (span) {
+      y = span.y * scaleY - halfHeight - gap;
+      if (y - halfHeight < 0) y = (span.y + span.height) * scaleY + halfHeight + gap;
+    } else {
+      y = anchor[1] * scaleY;
+    }
+
+    var x = Math.min(Math.max(host.width * left / 100, halfWidth),
+                     Math.max(host.width - halfWidth, halfWidth));
+    y = Math.min(Math.max(y, halfHeight), Math.max(host.height - halfHeight, halfHeight));
+    node.style.left = (x / host.width * 100) + '%';
+    node.style.top = (y / host.height * 100) + '%';
+    node.dataset.placed = 'true';
   }
 
   function markSelection() {
@@ -398,7 +414,11 @@
       outline.setAttribute('d', path ? path.getAttribute('d') : '');
     }
     mapLabels.querySelectorAll('.field-label').forEach(function (node) {
-      node.setAttribute('data-on', node.dataset.area === selected ? 'true' : 'false');
+      var on = node.dataset.area === selected;
+      node.setAttribute('data-on', on ? 'true' : 'false');
+      // The one being shown is the only one worth measuring, and this is
+      // the moment it becomes worth it.
+      if (on) positionLabel(node);
     });
   }
 
