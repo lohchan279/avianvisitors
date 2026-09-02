@@ -134,8 +134,9 @@ class FieldRecordingTests(unittest.TestCase):
             # Below the accept bar, so the worker takes the branch that
             # deletes the clip.
             worker.to_wav = lambda src, wav: wav.write_bytes(b"") or True
-            worker.analyse = lambda *a, **k: [
-                {"sci": "Turdus mandarinus", "com": "Chinese Blackbird", "conf": 0.11}]
+            # analyse returns (candidates, reason-when-empty).
+            worker.analyse = lambda *a, **k: (
+                [{"sci": "Turdus mandarinus", "com": "Chinese Blackbird", "conf": 0.11}], "")
             worker.accept_threshold = lambda: 0.5
             # Reaches into BirdNET's utils package, which is not importable
             # here and is not what this test is about.
@@ -170,6 +171,75 @@ class FieldRecordingTests(unittest.TestCase):
             f"a clip that could not be deleted overwrote the verdict: {dict(got)}")
         self.assertNotIn("Permission denied", got["Error"] or "")
         self.assertNotIn("Errno 13", got["Error"] or "")
+
+    def test_an_empty_result_says_which_kind_of_empty(self):
+        """"nothing heard" was three faults wearing one label.
+
+        A station reported it for every field recording in a row. The
+        message covered a clip the model scored nothing in, a clip whose
+        scores were all under the noise floor, and a clip the range model
+        rejected wholesale for being out of place or season - three
+        different problems with three different fixes, and telling them
+        apart meant reading the worker's log over SSH. The worker knows
+        which at the moment it decides; it just used to throw it away.
+        """
+        import importlib.util
+        import json
+        import sys
+        import tempfile
+
+        box = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, box, True)
+        (box / "utils").mkdir()
+        (box / "utils" / "__init__.py").write_text("")
+        (box / "utils" / "analysis.py").write_text(
+            "import os, json\n"
+            "def readAudioData(path, overlap, sr, dur): return ['chunk']\n"
+            "def analyzeAudioData(chunks, overlap, lat, lon, week):\n"
+            "    return json.loads(os.environ['FAKE_RAW']), json.loads(os.environ['FAKE_PRED'])\n"
+            "def loadCustomSpeciesList(path): return []\n")
+        (box / "utils" / "helpers.py").write_text(
+            "class _C(dict):\n"
+            "    def getfloat(self, k): return 0.0\n"
+            "def get_settings(): return _C({'DATABASE_LANG': 'en'})\n"
+            "def get_language(lang): return {}\n")
+        (box / "utils" / "models.py").write_text(
+            "class _M:\n    sample_rate = 48000\n    chunk_duration = 3.0\n"
+            "def get_model(): return _M()\n")
+
+        sys.path.insert(0, str(box))
+        self.addCleanup(sys.path.remove, str(box))
+        spec = importlib.util.spec_from_file_location(
+            "submission_worker_reasons", ROOT / "scripts" / "submission_worker.py")
+        worker = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = worker
+        spec.loader.exec_module(worker)
+
+        bulbul = "Pycnonotus goiavier_Yellow-vented Bulbul"
+        cases = [
+            ("silence", {}, [], "scored nothing"),
+            ("under the floor", {"0-3": [["Turdus mandarinus_Chinese Blackbird", 0.01]]},
+             [], "none above"),
+            ("out of range", {"0-3": [["Cyanocitta cristata_Blue Jay", 0.62]]},
+             [bulbul], "out of range"),
+        ]
+        for label, raw, predicted, expected in cases:
+            with self.subTest(label):
+                os.environ["FAKE_RAW"] = json.dumps(raw)
+                os.environ["FAKE_PRED"] = json.dumps(predicted)
+                self.addCleanup(os.environ.pop, "FAKE_RAW", None)
+                self.addCleanup(os.environ.pop, "FAKE_PRED", None)
+                got, reason = worker.analyse(box / "clip.wav", 1.316, 103.902, 35)
+                self.assertEqual(got, [], f"{label} should produce no candidates")
+                self.assertIn(expected, reason)
+
+        # And a clip that does produce something reports no reason at all,
+        # so the row carries the near miss rather than a diagnosis.
+        os.environ["FAKE_RAW"] = json.dumps({"0-3": [[bulbul, 0.44]]})
+        os.environ["FAKE_PRED"] = json.dumps([bulbul])
+        got, reason = worker.analyse(box / "clip.wav", 1.316, 103.902, 35)
+        self.assertEqual(len(got), 1)
+        self.assertEqual(reason, "")
 
     # ---- the preview harness ----------------------------------------
     def test_preview_still_reads_both_real_lists(self):

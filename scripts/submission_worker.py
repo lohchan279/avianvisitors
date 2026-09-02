@@ -126,26 +126,49 @@ def analyse(wav: Path, lat: float, lon: float, week: int) -> list[dict]:
     # Keep the best score per species across the whole clip, rather than
     # per time slot: the submitter cares which bird it was, not when.
     best: dict[str, float] = {}
-    dropped = 0
+    seen = 0     # bird entries the model returned, at any confidence
+    scored = 0   # ... of those, the ones above the noise floor
+    dropped = 0  # ... of those, the ones the species gates rejected
     for entries in raw.values():
         for sci_name, confidence in entries:
-            if confidence < MIN_CONFIDENCE:
-                continue
             if "Human" in sci_name or "_" not in sci_name and sci_name.islower():
                 continue
+            seen += 1
+            if confidence < MIN_CONFIDENCE:
+                continue
+            scored += 1
             if not admitted(sci_name):
                 dropped += 1
                 continue
             if confidence > best.get(sci_name, 0.0):
                 best[sci_name] = float(confidence)
     if dropped:
-        log.info("%d scores dropped by the species gates", dropped)
+        log.info("%d of %d scores dropped by the species gates", dropped, scored)
 
     ranked = sorted(best.items(), key=lambda kv: kv[1], reverse=True)
-    return [
+    candidates = [
         {"sci": sci, "com": names.get(sci, sci), "conf": round(conf_value_, 4)}
         for sci, conf_value_ in ranked[:KEEP_CANDIDATES]
     ]
+
+    # Why there is nothing, when there is nothing. "nothing heard" covers
+    # three different faults with three different fixes - a clip the model
+    # scored nothing in, a clip whose scores were all beneath the noise
+    # floor, and a clip the range model rejected wholesale because of where
+    # or when it thinks the recording was made. Reading them apart needed
+    # the worker's log, on the station, over SSH. The row can just say.
+    if candidates:
+        reason = ""
+    elif seen == 0:
+        reason = "the model scored nothing in the clip"
+    elif scored == 0:
+        reason = f"{seen} scores, none above {MIN_CONFIDENCE:.2f}"
+    elif dropped == scored:
+        reason = (f"all {scored} scores rejected as out of range for "
+                  f"{lat:.3f},{lon:.3f} in week {week}")
+    else:
+        reason = f"{scored} scores, none kept"
+    return candidates, reason
 
 
 def submission_week(created: str | None) -> int:
@@ -250,14 +273,15 @@ def process(db: sqlite3.Connection, row: sqlite3.Row, extracted: Path) -> None:
         if not to_wav(src, wav):
             finish(db, sub_id, "failed", error="could not decode the recording")
             return
-        candidates = analyse(wav, lat, lon, week)
+        candidates, empty_reason = analyse(wav, lat, lon, week)
         bar = accept_threshold()
         best = candidates[0] if candidates else None
 
         if best is None or best["conf"] < bar:
             # Keep the near misses in the row - they are what the station
             # nearly said - but not the audio, which nobody can use.
-            near = f"best {best['com']} {best['conf']:.2f} < {bar:.2f}" if best else "nothing heard"
+            near = (f"best {best['com']} {best['conf']:.2f} < {bar:.2f}" if best
+                    else (empty_reason or "nothing heard"))
             finish(db, sub_id, "unsure", candidates=candidates, error=near)
             settled = True
             discard_audio(src)
