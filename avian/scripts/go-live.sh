@@ -205,6 +205,24 @@ where=$(php -r '
 ' 2>/dev/null)
 say "the station sits in" "${where:-unknown}"
 
+# ---- one config file, not two -----------------------------------------
+# ~/BirdNET-Pi/birdnet.conf is meant to be a symlink to the file in /etc.
+# When something replaces it with a real copy the two drift apart, and
+# nothing says so: the settings panel writes /etc, half the API reads
+# /etc, the other half reads the copy. A key saved in Settings then works
+# in one place and not another, and the file that is wrong is the one
+# that stopped being updated - which is invisible from the outside.
+etc_conf=/etc/birdnet/birdnet.conf
+repo_conf="$REPO/birdnet.conf"
+if [ -e "$etc_conf" ] && [ -e "$repo_conf" ]; then
+  if [ "$(readlink -f "$etc_conf")" = "$(readlink -f "$repo_conf")" ]; then
+    good "one config file, not two"
+  else
+    bad "one config file, not two" \
+      "$repo_conf is a separate copy, not a link to $etc_conf - back it up and run: ln -sfn $etc_conf $repo_conf"
+  fi
+fi
+
 # ---- who may record ---------------------------------------------------
 if "$REPO/avian/scripts/access-setup.sh" check >/dev/null 2>&1; then
   good "Cloudflare Access identities may record"

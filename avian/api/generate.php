@@ -36,7 +36,14 @@ if (!is_string($LOCK) || $LOCK === '') {
 }
 $LOG     = "$ILLUS/.generate.log";
 $DB_PATH = "$BIRDNETPI_DIR/scripts/birds.db";
-$CONF    = "$BIRDNETPI_DIR/birdnet.conf";
+// /etc first, because that is the file config.php writes when somebody
+// saves a key in the settings panel. The copy in the checkout is meant to
+// be a symlink to it; when the symlink is replaced by a real file the two
+// drift apart silently, and this endpoint - reading only the checkout -
+// generated against whatever key was current the day the copy was made,
+// while the panel showed the one that had just been saved.
+$CONF = '/etc/birdnet/birdnet.conf';
+if (!is_readable($CONF)) $CONF = "$BIRDNETPI_DIR/birdnet.conf";
 $STALE_S = 15 * 60;   // a "running" state older than this is a dead run
 $HOUR_CAP = 20;       // max starts per rolling hour (cost brake)
 
