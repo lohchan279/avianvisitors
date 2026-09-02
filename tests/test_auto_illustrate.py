@@ -71,6 +71,18 @@ class KeyLookupTests(unittest.TestCase):
         self.addCleanup(os.environ.pop, "GEMINI_API_KEY", None)
         self.assertEqual(self.module.gemini_key(), "from-the-environment")
 
+    def test_a_key_written_twice_takes_the_later_value(self):
+        # birdnet.conf is sourced as a shell file, so the last assignment
+        # is the one that counts. config.php's read_conf and
+        # admin_control.sh's conf_value both already work this way; a
+        # reader that took the first would generate against a key the
+        # settings panel does not show, with nothing reporting the split.
+        self.conf.write_text(
+            'GEMINI_API_KEY="the-old-one"\n'
+            "SITE_NAME=GHLYMS\n"
+            'GEMINI_API_KEY="the-one-settings-just-saved"\n')
+        self.assertEqual(self.module.gemini_key(), "the-one-settings-just-saved")
+
     def test_no_key_anywhere_is_an_empty_string_not_a_crash(self):
         self.conf.write_text("SITE_NAME=GHLYMS\n")
         self.assertEqual(self.module.gemini_key(), "")

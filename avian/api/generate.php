@@ -65,18 +65,26 @@ function chroma_count(string $illus): int {
     return $n;
 }
 
+// The last assignment wins, not the first. birdnet.conf is a shell file
+// that upstream's scripts source, so a key written twice takes the later
+// value - and that is also what config.php's read_conf and
+// admin_control.sh's conf_value already do. Returning on the first match
+// made this the odd one out: on a conf with a duplicated key the settings
+// panel would show one value and this would generate against another,
+// with nothing anywhere saying they differed.
 function conf_value(string $conf, string $key): string {
     if (!is_readable($conf)) return '';
+    $value = '';
     foreach (file($conf, FILE_IGNORE_NEW_LINES) as $line) {
         if (preg_match('/^\s*' . $key . '\s*=\s*(.*)$/', $line, $m)) {
             $v = trim($m[1]);
             if (strlen($v) >= 2 && $v[0] === '"' && substr($v, -1) === '"') {
                 $v = substr($v, 1, -1);
             }
-            return $v;
+            $value = $v;
         }
     }
-    return '';
+    return $value;
 }
 
 function atomic_write(string $path, string $contents): bool {

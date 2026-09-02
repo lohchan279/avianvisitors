@@ -43,12 +43,14 @@ DB_PATHS = [
     Path("/home/pi/BirdNET-Pi/scripts/birds.db"),
 ]
 
-# Where the settings panel puts the Gemini key. generate.php reads
-# $BIRDNETPI_DIR/birdnet.conf, which on a station is a symlink to the file
-# in /etc; both are listed so this works either way round.
+# Where the settings panel puts the Gemini key. /etc first because that is
+# the file config.php actually writes; the one in the checkout is normally
+# a symlink to it, and listing both means this still works if it is not -
+# but if they ever are two separate files, the one being written is the
+# one to believe.
 CONF_PATHS = [
-    SCRIPT_DIR.parent.parent / "birdnet.conf",
     Path("/etc/birdnet/birdnet.conf"),
+    SCRIPT_DIR.parent.parent / "birdnet.conf",
 ]
 
 PYTHON = sys.executable
@@ -73,6 +75,9 @@ def gemini_key() -> str:
 
     Parsed the way conf_value() in generate.php parses it, including the
     optional quotes, so the two cannot disagree about what the file says.
+    The last assignment in a file wins, not the first: birdnet.conf is a
+    shell file that upstream sources, so a key written twice takes the
+    later value, and every other reader on the station already agrees.
     """
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if key:
@@ -82,6 +87,7 @@ def gemini_key() -> str:
             lines = conf.read_text().splitlines()
         except OSError:
             continue
+        found = ""
         for line in lines:
             m = re.match(r"\s*GEMINI_API_KEY\s*=\s*(.*)$", line)
             if not m:
@@ -90,7 +96,9 @@ def gemini_key() -> str:
             if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
                 value = value[1:-1]
             if value:
-                return value
+                found = value
+        if found:
+            return found
     return ""
 
 
