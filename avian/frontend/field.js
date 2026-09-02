@@ -755,7 +755,7 @@
         return;
       }
       if (j.status === 'confirmed') return showCaught(j);
-      if (j.status === 'unsure' || j.status === 'rejected') return showUnsure();
+      if (j.status === 'unsure' || j.status === 'rejected') return showUnsure(j);
       showError(j.error || 'the recording could not be analysed');
     }).catch(function (e) { showError(String(e.message || e)); });
   }
@@ -802,12 +802,34 @@
     refresh(true);
   }
 
-  function showUnsure() {
+  /* The near misses matter. Without them a clip that scored 31% against a
+   * 50% bar is indistinguishable from one that heard nothing at all, and
+   * the only conclusion available to somebody standing under a singing
+   * bird is that the feature does not work. The station has always
+   * recorded what it nearly said; this is the first thing to show it. */
+  function showUnsure(result) {
+    var near = (result && result.near) || [];
     var wrap = el('div', 'field-step');
     wrap.appendChild(el('h3', 'field-step-title', 'Could not make that one out'));
-    wrap.appendChild(el('p', 'field-lead',
-      'Nothing in that clip scored high enough to put a name to. Get closer '
-      + 'if you can, or wait for the bird to call again.'));
+    wrap.appendChild(el('p', 'field-lead', near.length
+      ? 'The station had a guess but was not confident enough to name it. '
+        + 'Get closer if you can, or wait for the bird to call again.'
+      : 'Nothing in that clip scored high enough to put a name to. Get closer '
+        + 'if you can, or wait for the bird to call again.'));
+
+    if (near.length) {
+      var list = el('div', 'field-near');
+      list.appendChild(el('p', 'field-eyebrow', 'closest matches'));
+      near.forEach(function (row) {
+        var line = el('div', 'field-near-row');
+        line.appendChild(el('span', 'field-near-name', row.com || row.sci || 'unknown'));
+        line.appendChild(el('span', 'field-near-conf',
+          Math.round((row.conf || 0) * 100) + '%'));
+        list.appendChild(line);
+      });
+      wrap.appendChild(list);
+    }
+
     var again = el('button', 'field-primary', 'try again');
     again.type = 'button';
     again.addEventListener('click', startRecording);

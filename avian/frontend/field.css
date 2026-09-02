@@ -250,6 +250,29 @@
 }
 .field-row audio { width: 100%; height: 32px; }
 
+/* ------------------------------------------- what it nearly said */
+.field-near {
+  margin: 18px 0 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--paper-2, #f4f2ec);
+  text-align: left;
+}
+.field-near-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+}
+.field-near-row + .field-near-row { border-top: 1px solid var(--rule, #e6e2d8); }
+.field-near-name { font-size: .95rem; }
+.field-near-conf {
+  font: 10px/1 ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--ink-soft, #908576);
+  flex: 0 0 auto;
+}
+
 /* ---------------------------------------------- the floating recorder */
 /* On every view but the Map, which has a full-width button of its own.
    The Map view is where the recorder lives; this is the way in from the

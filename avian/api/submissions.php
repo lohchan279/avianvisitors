@@ -241,11 +241,26 @@ if ($action === 'result') {
     $id = (int)($_GET['id'] ?? 0);
     if ($id <= 0) fail('bad id');
     $stmt = $pdo->prepare('SELECT Id, Status, Audio, Error, Sci_Name, Com_Name,
-                                  Confidence, Place
+                                  Confidence, Place, Candidates
                            FROM submissions WHERE Id = :id');
     $stmt->execute([':id' => $id]);
     $row = $stmt->fetch();
     if (!$row) fail('no such submission', 404);
+
+    // What the station nearly said. The worker has always recorded this
+    // and nothing ever showed it, so a clip that scored 0.31 against a
+    // 0.50 bar looked exactly like a clip that heard nothing at all -
+    // and "it never works" is the only conclusion available from that.
+    $near = [];
+    foreach ((array)json_decode((string)$row['Candidates'], true) as $c) {
+        if (!is_array($c) || !isset($c['conf'])) continue;
+        $near[] = [
+            'sci'  => isset($c['sci']) ? (string)$c['sci'] : null,
+            'com'  => isset($c['com']) ? (string)$c['com'] : null,
+            'conf' => round((float)$c['conf'], 3),
+        ];
+        if (count($near) >= 3) break;
+    }
 
     echo json_encode([
         'ok'     => true,
@@ -256,6 +271,7 @@ if ($action === 'result') {
         'conf'   => $row['Confidence'] === null ? null : round((float)$row['Confidence'], 3),
         'place'  => $row['Place'],
         'error'  => $row['Error'],
+        'near'   => $near,
     ]);
     exit;
 }
