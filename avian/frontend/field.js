@@ -828,6 +828,14 @@
         list.appendChild(line);
       });
       wrap.appendChild(list);
+    } else if (result && result.error) {
+      /* No candidates at all is a different fault from a low-scoring
+       * guess, and the two used to render the same sentence - so this
+       * screen could not be told apart from the one before the near
+       * misses existed, and neither could a station that had not
+       * deployed yet. The worker's own reason is short and true; show
+       * it rather than leaving the reader to infer. */
+      wrap.appendChild(el('p', 'field-near-reason', 'station: ' + result.error));
     }
 
     var again = el('button', 'field-primary', 'try again');

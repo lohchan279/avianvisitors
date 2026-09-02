@@ -272,6 +272,12 @@
   color: var(--ink-soft, #908576);
   flex: 0 0 auto;
 }
+.field-near-reason {
+  margin: 14px 0 4px;
+  font: 10px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
+  letter-spacing: .06em;
+  color: var(--ink-soft, #908576);
+}
 
 /* ---------------------------------------------- the floating recorder */
 /* On every view but the Map, which has a full-width button of its own.
