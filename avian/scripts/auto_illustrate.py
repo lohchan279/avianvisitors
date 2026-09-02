@@ -43,12 +43,55 @@ DB_PATHS = [
     Path("/home/pi/BirdNET-Pi/scripts/birds.db"),
 ]
 
+# Where the settings panel puts the Gemini key. generate.php reads
+# $BIRDNETPI_DIR/birdnet.conf, which on a station is a symlink to the file
+# in /etc; both are listed so this works either way round.
+CONF_PATHS = [
+    SCRIPT_DIR.parent.parent / "birdnet.conf",
+    Path("/etc/birdnet/birdnet.conf"),
+]
+
 PYTHON = sys.executable
 LOCKFILE = Path("/tmp/auto_illustrate.lock")
 
 
 def slugify(sci: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", sci.lower()).strip("-")
+
+
+def gemini_key() -> str:
+    """The key, from the environment or from birdnet.conf.
+
+    Reading only os.environ is what kept this from ever generating
+    anything. The key is saved by the settings panel into birdnet.conf,
+    and generate.php reads it from there and injects it into the
+    environment of the process it starts. Nothing does that for this
+    script: it is spawned by birdnet_analysis, whose service environment
+    has never carried the key. So the automatic path quietly downgraded
+    to fork-downloads-only and said so in a log in /tmp, while the manual
+    button on the same station worked perfectly.
+
+    Parsed the way conf_value() in generate.php parses it, including the
+    optional quotes, so the two cannot disagree about what the file says.
+    """
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if key:
+        return key
+    for conf in CONF_PATHS:
+        try:
+            lines = conf.read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            m = re.match(r"\s*GEMINI_API_KEY\s*=\s*(.*)$", line)
+            if not m:
+                continue
+            value = m.group(1).strip()
+            if len(value) >= 2 and value[0] == '"' and value[-1] == '"':
+                value = value[1:-1]
+            if value:
+                return value
+    return ""
 
 
 def find_db() -> Path | None:
@@ -124,9 +167,9 @@ def try_fork_download(slug: str, fork_index: dict[str, str]) -> bool:
     return pose1 or pose2
 
 
-def generate_with_pregen(species_list: list[tuple[str, str]], gemini_key: str) -> int:
+def generate_with_pregen(species_list: list[tuple[str, str]], key: str) -> int:
     stdin_lines = "\n".join(f"{sci}|{com}" for sci, com in species_list)
-    cmd = [PYTHON, str(SCRIPT_DIR / "pregen.py"), "--stdin", "--gemini-key", gemini_key, "--no-refs"]
+    cmd = [PYTHON, str(SCRIPT_DIR / "pregen.py"), "--stdin", "--gemini-key", key, "--no-refs"]
     result = subprocess.run(cmd, input=stdin_lines, capture_output=True, text=True)
     if result.stdout:
         print(result.stdout, end="")
@@ -156,18 +199,56 @@ def run_build_masks() -> int:
 
 
 def bump_versions():
-    if not APT_JS.exists():
-        return
-    text = APT_JS.read_text()
-    import re as _re
-    def bump(m):
-        prefix, num = m.group(1), int(m.group(2))
-        return f"{prefix}{num + 1}"
-    new_text = _re.sub(r"(SKETCH_VERSION\s*=\s*'r)(\d+)'", lambda m: bump(m) + "'", text)
-    new_text = _re.sub(r"(IMG_VERSION\s*=\s*'r)(\d+)'", lambda m: bump(m) + "'", new_text)
-    if new_text != text:
-        APT_JS.write_text(new_text)
-        print("Bumped SKETCH_VERSION + IMG_VERSION in apt.js")
+    """Make the new bird visible to browsers that already have the site.
+
+    Two tokens, two jobs, and a new species needs both moved:
+
+      - TABLE_VERSION gates dims.json and masks.json, and dims.json is
+        exactly what the atlas consults to decide whether a species has
+        art ("needsArt = !DIMS[slug]"). Leave it and every browser keeps
+        a table with no entry for the new bird, so the card stays on the
+        nest placeholder no matter how often it is reloaded.
+
+      - the ?v= token in index.html gates apt.js itself, and TABLE_VERSION
+        lives inside apt.js. Bumping it in a file nobody refetches
+        changes nothing at all.
+
+    This used to bump SKETCH_VERSION and IMG_VERSION instead. Those stopped
+    being literals when they were changed to read ASSET_VERSION off apt.js's
+    own script tag - so the site token already carries them, and the two
+    substitutions here had been matching nothing ever since. Neither of the
+    tokens that actually matter was being touched.
+    """
+    moved = []
+
+    if APT_JS.exists():
+        text = APT_JS.read_text()
+        new_text, hits = re.subn(
+            r"(TABLE_VERSION\s*=\s*'r)(\d+)'",
+            lambda m: f"{m.group(1)}{int(m.group(2)) + 1}'", text)
+        if hits:
+            APT_JS.write_text(new_text)
+            moved.append("TABLE_VERSION in apt.js")
+        else:
+            print("warning: TABLE_VERSION not found in apt.js - dims.json will "
+                  "stay cached and the new bird will keep its placeholder",
+                  file=sys.stderr)
+
+    bumper = SCRIPT_DIR / "bump_version.sh"
+    if bumper.exists():
+        result = subprocess.run([str(bumper)], capture_output=True, text=True)
+        if result.stdout:
+            print(result.stdout, end="")
+        if result.returncode == 0:
+            moved.append("the site cache token")
+        else:
+            print(f"warning: {bumper.name} failed ({result.returncode}); browsers "
+                  f"will keep the old apt.js", file=sys.stderr)
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+
+    if moved:
+        print("Bumped " + " and ".join(moved))
 
 
 def main() -> int:
@@ -186,7 +267,7 @@ def main() -> int:
         print("error: birds.db not found", file=sys.stderr)
         return 2
 
-    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    key = gemini_key()
 
     species = get_detected_species(db_path)
     print(f"Detected species: {len(species)}")
@@ -218,14 +299,15 @@ def main() -> int:
 
     generated = []
     if need_generate:
-        if not gemini_key:
+        if not key:
             print(f"warning: {len(need_generate)} species need generation but "
-                  f"GEMINI_API_KEY not set", file=sys.stderr)
-            print("  Skipping generation. Set GEMINI_API_KEY to enable auto-generation.")
+                  f"no GEMINI_API_KEY in the environment or birdnet.conf",
+                  file=sys.stderr)
+            print("  Skipping generation. Save the key in Settings to enable it.")
         else:
             print(f"Generating {len(need_generate)} species via Gemini...")
             gen_species = [(sci, com) for sci, com, _ in need_generate]
-            generate_with_pregen(gen_species, gemini_key)
+            generate_with_pregen(gen_species, key)
             # Only count species whose files actually landed - pregen can fail
             # per-species (safety filters, quota) and still exit 0.
             generated = [(sci, com, slug) for sci, com, slug in need_generate
