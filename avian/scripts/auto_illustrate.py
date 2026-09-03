@@ -128,6 +128,46 @@ def get_missing(species: list[tuple[str, str]]) -> list[tuple[str, str, str]]:
     return missing
 
 
+def uncut_illustrations(species: list[tuple[str, str]]) -> list[str]:
+    """Slugs whose PNG is still sitting on the ground it was drawn on.
+
+    get_missing asks only whether the file exists, so a run that stops
+    between generating an image and cutting it leaves the bird on its
+    cream square - and every later run skips the species, because the
+    file is there. Nothing ever comes back for it. This is the repair.
+
+    A cut image carries transparency: RGBA keeps it in a channel, and the
+    palette images the library is optimised into keep it in the PNG's
+    transparency chunk. Neither needs the pixels decoded, so this reads
+    headers only. Scoped to species the station has actually detected -
+    an uncut drawing for a bird nobody has heard is not on any screen,
+    and walking the whole library costs fifteen seconds here and more on
+    a Pi.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        print("  (Pillow unavailable; not checking for uncut images)", file=sys.stderr)
+        return []
+
+    out = []
+    for sci, _com in species:
+        slug = slugify(sci)
+        for name in (slug, f"{slug}-2"):
+            path = ILLUST_DIR / f"{name}.png"
+            if not path.is_file():
+                continue
+            try:
+                with Image.open(path) as im:
+                    cut = im.mode in ("RGBA", "LA") or "transparency" in im.info
+            except OSError as e:
+                print(f"  could not read {path.name}: {e}", file=sys.stderr)
+                continue
+            if not cut:
+                out.append(name)
+    return out
+
+
 def load_fork_index() -> dict[str, str]:
     if not FORK_TSV.exists():
         return {}
@@ -277,7 +317,18 @@ def main() -> int:
             print("Another instance is running (lock < 10 min old). Exiting.")
             return 0
     LOCKFILE.write_text(str(os.getpid()))
+    # Released here rather than at each exit. Several paths returned
+    # without clearing it, and the detection hook in reporting.py treats a
+    # lock under ten minutes old as "a run is in progress" and stays quiet
+    # - so every no-op run used to mute the next ten minutes of new
+    # species.
+    try:
+        return run()
+    finally:
+        LOCKFILE.unlink(missing_ok=True)
 
+
+def run() -> int:
     db_path = find_db()
     if not db_path:
         print("error: birds.db not found", file=sys.stderr)
@@ -290,12 +341,17 @@ def main() -> int:
 
     ILLUST_DIR.mkdir(parents=True, exist_ok=True)
     missing = get_missing(species)
+    # Worked out before the early return: a species can have its file and
+    # still need cutting, and that is exactly the case that used to fall
+    # through here and never be looked at again.
+    stranded = uncut_illustrations(species)
 
-    if not missing:
+    if not missing and not stranded:
         print("All detected species have illustrations.")
         return 0
 
-    print(f"Missing illustrations: {len(missing)} species")
+    if missing:
+        print(f"Missing illustrations: {len(missing)} species")
 
     fork_index = load_fork_index()
     print(f"Fork index: {len(fork_index)} species available")
@@ -338,6 +394,15 @@ def main() -> int:
         for name in (slug, f"{slug}-2"):
             if (ILLUST_DIR / f"{name}.png").exists():
                 slug_args.append(name)
+
+    # Plus anything an earlier run drew and never cut. cutout.py checks
+    # each file properly before touching it, so a slug offered here that
+    # turns out to be fine is skipped rather than re-cut.
+    stranded = [name for name in stranded if name not in slug_args]
+    if stranded:
+        print(f"Also cutting {len(stranded)} image(s) left on their background "
+              f"by an earlier run: {', '.join(stranded)}")
+        slug_args.extend(stranded)
 
     if not slug_args:
         print("No new images to process.")

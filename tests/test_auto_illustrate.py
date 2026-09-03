@@ -161,6 +161,86 @@ class CacheTokenTests(unittest.TestCase):
                            "and never see the new TABLE_VERSION")
 
 
+class UncutRepairTests(unittest.TestCase):
+    """An image drawn but never cut was invisible to every later run.
+
+    get_missing asks only whether the file exists, so a run that stopped
+    between generating and cutting left the bird sitting on the cream
+    square it was drawn on, and nothing ever came back for it. The
+    species had its file, so it was not missing.
+    """
+
+    def setUp(self):
+        self.module = load_module()
+        self.box = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.box, True)
+        self.module.ILLUST_DIR = self.box
+        try:
+            from PIL import Image
+        except ImportError:  # pragma: no cover - Pillow is a station dependency
+            self.skipTest("Pillow not available")
+        self.Image = Image
+
+    def write_uncut(self, slug):
+        # What pregen leaves behind: the bird on its generation ground.
+        self.Image.new("RGB", (64, 64), (245, 238, 220)).save(self.box / f"{slug}.png")
+
+    def write_cut_palette(self, slug):
+        # How the library stores a finished one, after optimisation.
+        blank = self.Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        blank.convert("P", palette=self.Image.ADAPTIVE).save(
+            self.box / f"{slug}.png", transparency=0)
+
+    def write_cut_rgba(self, slug):
+        self.Image.new("RGBA", (64, 64), (0, 0, 0, 0)).save(self.box / f"{slug}.png")
+
+    def test_it_finds_the_one_still_on_its_background(self):
+        self.write_uncut("oriolus-xanthornus")
+        self.write_cut_palette("picus-canus")
+        self.write_cut_rgba("mixornis-gularis")
+        species = [("Oriolus xanthornus", "Black-hooded Oriole"),
+                   ("Picus canus", "Gray-headed Woodpecker"),
+                   ("Mixornis gularis", "Pin-striped Tit-Babbler")]
+        self.assertEqual(self.module.uncut_illustrations(species),
+                         ["oriolus-xanthornus"])
+
+    def test_a_species_with_no_file_is_not_reported_as_uncut(self):
+        # That is get_missing's job, and reporting it here would hand
+        # cutout.py a slug with nothing behind it, which is an error.
+        self.assertEqual(
+            self.module.uncut_illustrations([("Corvus splendens", "House Crow")]), [])
+
+    def test_an_unreadable_file_is_skipped_not_fatal(self):
+        (self.box / "broken-bird.png").write_bytes(b"not a png")
+        self.assertEqual(
+            self.module.uncut_illustrations([("Broken bird", "Broken")]), [])
+
+    def test_the_repair_survives_the_early_return(self):
+        # The bug in miniature: with every file present, main used to
+        # announce "all detected species have illustrations" and stop -
+        # before anything looked at whether they had been cut.
+        source = (ROOT / "avian" / "scripts" / "auto_illustrate.py").read_text()
+        early = source.index("All detected species have illustrations")
+        checked = source.index("stranded = uncut_illustrations(species)")
+        self.assertLess(
+            checked, early,
+            "uncut_illustrations must be consulted before the early return, "
+            "or an image left on its background is never found again")
+
+
+class LockTests(unittest.TestCase):
+    def test_the_lock_is_released_however_the_run_ends(self):
+        # reporting.py treats a lock under ten minutes old as "a run is in
+        # progress" and stays quiet, so a run that returns without
+        # clearing it mutes the next ten minutes of new species. Several
+        # paths returned early; the release belongs in a finally.
+        source = (ROOT / "avian" / "scripts" / "auto_illustrate.py").read_text()
+        body = source[source.index("def main() -> int:"):]
+        self.assertRegex(
+            body, r"try:\s*\n\s*return run\(\)\s*\n\s*finally:\s*\n\s*LOCKFILE\.unlink",
+            "the lock is not released in a finally, so an early return leaks it")
+
+
 class DetectionHookTests(unittest.TestCase):
     def test_a_new_detection_launches_the_illustrator(self):
         # The trigger is a hook in the analysis loop, not only a cron - so
