@@ -228,6 +228,82 @@ class UncutRepairTests(unittest.TestCase):
             "or an image left on its background is never found again")
 
 
+class HelperInterpreterTests(unittest.TestCase):
+    """The cutout has to run under an interpreter that has rembg.
+
+    The detection hook spawns this script with sys.executable, which is
+    birdnet_analysis's own venv. That has the model; it does not have
+    rembg. So generation, which needs far less, succeeded while cutout.py
+    exited with "needs Pillow + rembg" - and the bird stayed on the cream
+    ground it was drawn on. From the outside the cutout step simply never
+    ran.
+    """
+
+    def setUp(self):
+        self.module = load_module()
+        self.box = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.box, True)
+        self.real = sys.executable
+
+    def fake_python(self, name, with_rembg):
+        root = self.box / name
+        (root / "lib").mkdir(parents=True)
+        if with_rembg:
+            (root / "lib" / "rembg").mkdir()
+            (root / "lib" / "rembg" / "__init__.py").write_text("")
+        exe = root / "python3"
+        exe.write_text(f'#!/bin/sh\nexec env PYTHONPATH="{root}/lib" '
+                       f'PYTHONNOUSERSITE=1 {self.real} "$@"\n')
+        exe.chmod(0o755)
+        return str(exe)
+
+    def resolve(self, started_with, home):
+        self.module._HELPER_PYTHON = None
+        real_exe, real_home = sys.executable, pathlib.Path.home
+        sys.executable = started_with
+        pathlib.Path.home = staticmethod(lambda: pathlib.Path(home))
+        try:
+            return self.module.helper_python()
+        finally:
+            sys.executable, pathlib.Path.home = real_exe, real_home
+
+    def test_it_keeps_the_one_it_was_started_with_when_that_works(self):
+        good = self.fake_python("good", with_rembg=True)
+        self.assertEqual(self.resolve(good, self.box / "nowhere"), good)
+
+    def test_it_falls_back_to_birdvenv_when_started_without_rembg(self):
+        bare = self.fake_python("bare", with_rembg=False)
+        good = self.fake_python("good", with_rembg=True)
+        home = self.box / "home"
+        (home / "birdvenv" / "bin").mkdir(parents=True)
+        (home / "birdvenv" / "bin" / "python3").symlink_to(good)
+        self.assertEqual(self.resolve(bare, home),
+                         str(home / "birdvenv" / "bin" / "python3"))
+
+    def test_with_rembg_nowhere_it_says_so_rather_than_pretending(self):
+        bare = self.fake_python("bare", with_rembg=False)
+        got = self.resolve(bare, self.box / "nowhere")
+        self.assertEqual(got, bare)  # nothing better exists; the warning is the point
+
+    def test_the_helpers_all_go_through_the_resolver(self):
+        source = (ROOT / "avian" / "scripts" / "auto_illustrate.py").read_text()
+        for helper in ("pregen.py", "cutout.py", "build_masks.py"):
+            self.assertIn(f'[helper_python(), str(SCRIPT_DIR / "{helper}")', source,
+                          f"{helper} is not launched through helper_python()")
+        self.assertNotIn("[PYTHON,", source)
+
+    def test_a_failed_cutout_stops_the_run(self):
+        # Ignoring cutout's exit code is what let a station rebuild masks
+        # from uncut images, move the cache token, and print "Done".
+        source = (ROOT / "avian" / "scripts" / "auto_illustrate.py").read_text()
+        self.assertIn("if run_cutout(slug_args) != 0:", source)
+        self.assertIn("if run_build_masks() != 0:", source)
+        cut = source.index("if run_cutout(slug_args) != 0:")
+        bump = source.index("bump_versions()", cut)
+        self.assertIn("return 1", source[cut:bump],
+                      "a failed cutout must not reach bump_versions")
+
+
 class LockTests(unittest.TestCase):
     def test_the_lock_is_released_however_the_run_ends(self):
         # reporting.py treats a lock under ten minutes old as "a run is in

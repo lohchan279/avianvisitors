@@ -53,8 +53,55 @@ CONF_PATHS = [
     SCRIPT_DIR.parent.parent / "birdnet.conf",
 ]
 
-PYTHON = sys.executable
 LOCKFILE = Path("/tmp/auto_illustrate.lock")
+
+_HELPER_PYTHON = None
+
+
+def helper_python() -> str:
+    """The interpreter the illustration helpers actually run under.
+
+    sys.executable is whoever started this script. When that is the
+    detection hook in reporting.py it is BirdNET's own venv, which has
+    the model but not rembg - so cutout.py exits with "needs Pillow +
+    rembg" and the bird stays on the cream ground it was drawn on, while
+    generation, needing far less, succeeds. From the outside that looks
+    exactly like the cutout step not running, which is what it is. The
+    interpreter this script documents for itself is birdvenv.
+
+    find_spec rather than a real import: importing rembg pulls in
+    onnxruntime and takes seconds. Resolved once, and only when a helper
+    is actually about to be run.
+    """
+    global _HELPER_PYTHON
+    if _HELPER_PYTHON is not None:
+        return _HELPER_PYTHON
+
+    probe = ("import importlib.util, sys; "
+             "sys.exit(0 if importlib.util.find_spec('rembg') else 1)")
+    tried = []
+    for candidate in (sys.executable, str(Path.home() / "birdvenv" / "bin" / "python3")):
+        if not candidate or candidate in tried:
+            continue
+        tried.append(candidate)
+        if not Path(candidate).exists():
+            continue
+        try:
+            ok = subprocess.run([candidate, "-c", probe],
+                                capture_output=True, timeout=60).returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if ok:
+            if candidate != sys.executable:
+                print(f"  using {candidate} for the image tools "
+                      f"(the one that started this has no rembg)")
+            _HELPER_PYTHON = candidate
+            return _HELPER_PYTHON
+
+    print("warning: no interpreter found with rembg installed; cutouts will fail",
+          file=sys.stderr)
+    _HELPER_PYTHON = sys.executable
+    return _HELPER_PYTHON
 
 
 def slugify(sci: str) -> str:
@@ -217,7 +264,7 @@ def try_fork_download(slug: str, fork_index: dict[str, str]) -> bool:
 
 def generate_with_pregen(species_list: list[tuple[str, str]], key: str) -> int:
     stdin_lines = "\n".join(f"{sci}|{com}" for sci, com in species_list)
-    cmd = [PYTHON, str(SCRIPT_DIR / "pregen.py"), "--stdin", "--no-refs"]
+    cmd = [helper_python(), str(SCRIPT_DIR / "pregen.py"), "--stdin", "--no-refs"]
     # Through the environment rather than --gemini-key, which pregen's own
     # usage calls the preferred way and which keeps the key out of the
     # process list: argv is world-readable in /proc, so any local account
@@ -235,7 +282,7 @@ def generate_with_pregen(species_list: list[tuple[str, str]], key: str) -> int:
 
 
 def run_cutout(slugs: list[str]) -> int:
-    cmd = [PYTHON, str(SCRIPT_DIR / "cutout.py"), "--model", "u2net"] + slugs
+    cmd = [helper_python(), str(SCRIPT_DIR / "cutout.py"), "--model", "u2net"] + slugs
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.stdout:
         print(result.stdout, end="")
@@ -245,7 +292,7 @@ def run_cutout(slugs: list[str]) -> int:
 
 
 def run_build_masks() -> int:
-    cmd = [PYTHON, str(SCRIPT_DIR / "build_masks.py")]
+    cmd = [helper_python(), str(SCRIPT_DIR / "build_masks.py")]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.stdout:
         print(result.stdout, end="")
@@ -406,19 +453,29 @@ def run() -> int:
 
     if not slug_args:
         print("No new images to process.")
-        LOCKFILE.unlink(missing_ok=True)
         return 0
 
     print(f"\nRunning cutout on {len(slug_args)} images...")
-    run_cutout(slug_args)
+    if run_cutout(slug_args) != 0:
+        # Loud, and fatal to the run. Ignoring this is how a station spent
+        # days serving birds on the cream squares they were drawn on: the
+        # cut failed, the masks were rebuilt from uncut images anyway, the
+        # cache token moved, and the last line said "Done". Leaving the
+        # token alone also means the browser is not told to fetch a
+        # half-finished library.
+        print("error: cutout failed; leaving the tokens alone so nothing "
+              "half-cut is published", file=sys.stderr)
+        return 1
 
     print("Rebuilding masks...")
-    run_build_masks()
+    if run_build_masks() != 0:
+        print("error: mask rebuild failed; leaving the tokens alone",
+              file=sys.stderr)
+        return 1
 
     # Only bust caches when pixels actually changed.
     bump_versions()
 
-    LOCKFILE.unlink(missing_ok=True)
     print(f"\nDone: {len(from_fork)} from forks, {len(generated)} generated")
     return 0
 
